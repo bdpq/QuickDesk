@@ -85,3 +85,6 @@ quickdesk-agent/target
 quickdesk-skill-host/target
 QuickDesk/3rdparty/rapidocr
 SignalingServer/.env
+
+# Local agent workspace (work logs, device-specific notes) - do not publish
+.workbuddy/

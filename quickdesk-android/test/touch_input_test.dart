@@ -416,4 +416,263 @@ void main() {
       router.cancel();
     },
   );
+
+  // 默认 1000x800 远程画面装进 400x800 视口：
+  // fitContain => Rect.fromLTWH(0, 240, 400, 320)，上下各有 240 黑边。
+  group('direct touch mode', () {
+    test('tap moves the cursor to the finger before clicking', () {
+      controller.setDirectTouchMode(true);
+      _tap(controller, const Offset(100, 400));
+
+      expect(channel.mouseEvents, hasLength(3));
+      final move = channel.mouseEvents[0];
+      expect(move.button, isNull);
+      expect(move.x, 250);
+      expect(move.y, 400);
+      expect(channel.mouseEvents[1].button, MouseButton.left.value);
+      expect(channel.mouseEvents[1].buttonDown, isTrue);
+      expect(channel.mouseEvents[1].x, 250);
+      expect(channel.mouseEvents[1].y, 400);
+      expect(channel.mouseEvents[2].buttonDown, isFalse);
+      expect(controller.cursorX, 250);
+      expect(controller.cursorY, 400);
+    });
+
+    test('finger position round-trips through the virtual cursor', () {
+      controller.setDirectTouchMode(true);
+      _tap(controller, const Offset(100, 400));
+
+      final screen = controller.cursorScreenPosition();
+      expect(screen, isNotNull);
+      expect(screen!.dx, closeTo(100, .001));
+      expect(screen.dy, closeTo(400, .001));
+    });
+
+    test('zoom and pan are applied when mapping the finger', () {
+      controller.scale = 2;
+      controller.setDirectTouchMode(true);
+      _tap(controller, const Offset(300, 400));
+
+      // local.x = 200 + (300 - 200) / 2 = 250 → 250/400*1000 = 625
+      expect(channel.mouseEvents.first.x, 625);
+      expect(channel.mouseEvents.first.y, 400);
+      expect(controller.cursorX, 625);
+    });
+
+    test('letterbox taps clamp to the visible frame', () {
+      controller.setDirectTouchMode(true);
+      _tap(controller, const Offset(200, 10));
+
+      expect(channel.mouseEvents.first.x, 500);
+      expect(channel.mouseEvents.first.y, 0);
+      expect(controller.cursorY, 0);
+    });
+
+    test('long press right-clicks at the finger position', () async {
+      controller.setDirectTouchMode(true);
+      controller.onPointerDown(_down(const Offset(100, 400)), 1);
+      await Future<void>.delayed(const Duration(milliseconds: 550));
+      controller.onPointerUp(_up(const Offset(100, 400)), 0);
+
+      expect(channel.mouseEvents, hasLength(3));
+      expect(channel.mouseEvents[1].button, MouseButton.right.value);
+      expect(channel.mouseEvents[1].x, 250);
+      expect(channel.mouseEvents[1].y, 400);
+      expect(channel.mouseEvents[2].buttonDown, isFalse);
+    });
+
+    test('second-tap drag starts pressing at the finger position', () {
+      controller.setDirectTouchMode(true);
+      _tap(controller, const Offset(100, 400));
+      channel.mouseEvents.clear();
+
+      controller.onPointerDown(_down(const Offset(100, 400)), 1);
+      controller.onPointerMove(_move(const Offset(120, 410)), 1);
+      controller.onPointerUp(_up(const Offset(120, 410)), 0);
+
+      expect(channel.mouseEvents.first.x, 250);
+      expect(channel.mouseEvents[1].buttonDown, isTrue);
+      expect(channel.mouseEvents[1].x, 250);
+      expect(channel.mouseEvents.last.buttonDown, isFalse);
+      expect(controller.leftButtonHeld, isFalse);
+    });
+
+    test('display origin is kept on the wire', () {
+      controller.setRemoteDisplay(1000, 800, originX: 1920, originY: 100);
+      controller.setDirectTouchMode(true);
+      _tap(controller, const Offset(100, 400));
+
+      expect(controller.cursorX, 250); // display-local
+      expect(channel.mouseEvents.first.x, 2170);
+      expect(channel.mouseEvents.first.y, 500);
+    });
+
+    test('turning direct touch off restores trackpad behaviour', () {
+      controller.setDirectTouchMode(true);
+      controller.setDirectTouchMode(false);
+      channel.mouseEvents.clear();
+
+      _tap(controller, const Offset(100, 400));
+
+      expect(channel.mouseEvents, hasLength(2));
+      expect(channel.mouseEvents[0].x, 500);
+      expect(channel.mouseEvents[0].y, 400);
+      expect(controller.cursorX, 500);
+      expect(controller.cursorY, 400);
+    });
+
+    test('no remote resolution means no cursor jump', () {
+      final fresh = TouchInputController(channel)
+        ..setViewportSize(400, 800)
+        ..setDirectTouchMode(true);
+      addTearDown(fresh.dispose);
+      _tap(fresh, const Offset(100, 400));
+
+      expect(channel.mouseEvents, isEmpty);
+      expect(fresh.cursorX, 0);
+    });
+  });
+
+  // 放大后「拖动屏幕」：直接触摸模式改为 1:1 平移画面，
+  // 轻点仍点哪点哪；触控板模式保持原来的拖光标 + 自动跟镜。
+  // 400x400 视口装 1000x800 画面 => fitContain 为 (0, 40, 400, 320)，
+  // scale=2 时水平可平移 ±200、垂直 ±120。
+  group('zoomed direct touch pan', () {
+    void zoomedSetup() {
+      controller
+        ..setViewportSize(400, 400)
+        ..scale = 2
+        ..setDirectTouchMode(true);
+    }
+
+    test('single-finger drag pans 1:1 without moving the remote mouse', () {
+      zoomedSetup();
+      var transforms = 0;
+      controller.onTransformChanged = () => transforms++;
+      final cursorX = controller.cursorX;
+      final cursorY = controller.cursorY;
+
+      controller.onPointerDown(_down(const Offset(200, 200)), 1);
+      controller.onPointerMove(_move(const Offset(205, 202)), 1);
+      expect(channel.mouseEvents, isEmpty);
+      expect(controller.translateX, 0);
+
+      // 阈值内被吞掉的小位移累计补回，保证跟手不丢距离。
+      controller.onPointerMove(_move(const Offset(260, 240)), 1);
+      expect(controller.translateX, 60);
+      expect(controller.translateY, 40);
+      controller.onPointerMove(_move(const Offset(270, 250)), 1);
+      expect(controller.translateX, 70);
+      expect(controller.translateY, 50);
+      controller.onPointerUp(_up(const Offset(270, 250)), 0);
+
+      expect(channel.mouseEvents, isEmpty);
+      expect(controller.cursorX, cursorX);
+      expect(controller.cursorY, cursorY);
+      expect(controller.leftButtonHeld, isFalse);
+      expect(transforms, greaterThan(0));
+    });
+
+    test('tap still clicks where the finger lands', () {
+      zoomedSetup();
+      _tap(controller, const Offset(300, 200));
+
+      expect(channel.mouseEvents, hasLength(3));
+      expect(channel.mouseEvents[0].button, isNull);
+      expect(channel.mouseEvents[0].x, 625);
+      expect(channel.mouseEvents[0].y, 400);
+      expect(channel.mouseEvents[1].button, MouseButton.left.value);
+      expect(channel.mouseEvents[1].buttonDown, isTrue);
+      expect(channel.mouseEvents[1].x, 625);
+      expect(controller.cursorX, 625);
+    });
+
+    test('pan is clamped to the zoomed content bounds', () {
+      zoomedSetup();
+      // 累计拖动 290px，超过 ±200 / ±120 的可平移范围。
+      controller.onPointerDown(_down(const Offset(100, 100)), 1);
+      controller.onPointerMove(_move(const Offset(390, 390)), 1);
+      controller.onPointerUp(_up(const Offset(390, 390)), 0);
+
+      expect(controller.translateX, 200);
+      expect(controller.translateY, 120);
+      expect(channel.mouseEvents, isEmpty);
+    });
+
+    test('consecutive pan gestures never hold the left button', () {
+      zoomedSetup();
+      _tap(controller, const Offset(200, 200));
+      channel.mouseEvents.clear();
+
+      // 300ms 内的第二次按下原本会被判成「双击后拖动」。
+      controller.onPointerDown(_down(const Offset(200, 200)), 1);
+      controller.onPointerMove(_move(const Offset(240, 210)), 1);
+      controller.onPointerUp(_up(const Offset(240, 210)), 0);
+
+      expect(controller.translateX, 40);
+      expect(channel.mouseEvents, isEmpty);
+      expect(controller.leftButtonHeld, isFalse);
+    });
+
+    test('explicit drag still holds the remote left button', () {
+      zoomedSetup();
+      controller.toggleDrag();
+      controller.onPointerDown(_down(const Offset(200, 200)), 1);
+      controller.onPointerMove(_move(const Offset(240, 210)), 1);
+
+      expect(controller.leftButtonHeld, isTrue);
+      expect(
+        channel.mouseEvents.where((e) => e.buttonDown == true),
+        hasLength(1),
+      );
+      expect(controller.translateX, isNot(40));
+      controller.onPointerUp(_up(const Offset(240, 210)), 0);
+      expect(controller.leftButtonHeld, isFalse);
+    });
+
+    test('long press right-clicks at the finger position', () async {
+      zoomedSetup();
+      controller.onPointerDown(_down(const Offset(300, 200)), 1);
+      await Future<void>.delayed(const Duration(milliseconds: 550));
+      controller.onPointerUp(_up(const Offset(300, 200)), 0);
+
+      expect(channel.mouseEvents, hasLength(3));
+      expect(channel.mouseEvents[0].x, 625);
+      expect(channel.mouseEvents[1].button, MouseButton.right.value);
+      expect(channel.mouseEvents[1].x, 625);
+      expect(controller.translateX, 0);
+    });
+
+    test('zoom out restores cursor dragging', () {
+      zoomedSetup();
+      controller.onPointerDown(_down(const Offset(200, 200)), 1);
+      controller.onPointerMove(_move(const Offset(230, 200)), 1);
+      controller.onPointerUp(_up(const Offset(230, 200)), 0);
+      expect(controller.translateX, 30);
+
+      controller.resetZoom();
+      channel.mouseEvents.clear();
+      controller.onPointerDown(_down(const Offset(200, 200)), 1);
+      controller.onPointerMove(_move(const Offset(240, 200)), 1);
+      controller.onPointerUp(_up(const Offset(240, 200)), 0);
+
+      expect(controller.scale, 1);
+      expect(controller.translateX, 0);
+      expect(controller.cursorX, greaterThan(500));
+      expect(channel.mouseEvents.last.button, isNull);
+    });
+
+    test('trackpad mode keeps moving the cursor when zoomed', () {
+      controller
+        ..setViewportSize(400, 400)
+        ..scale = 2;
+      controller.onPointerDown(_down(const Offset(200, 200)), 1);
+      controller.onPointerMove(_move(const Offset(240, 200)), 1);
+      controller.onPointerUp(_up(const Offset(240, 200)), 0);
+
+      expect(controller.cursorX, greaterThan(500));
+      expect(controller.translateX, 0);
+      expect(channel.mouseEvents.last.button, isNull);
+    });
+  });
 }

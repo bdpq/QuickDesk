@@ -16,6 +16,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../../api/signaling_api.dart';
 import '../../account/connection_log.dart';
+import '../../core/app_settings.dart';
 import '../../core/geometry.dart';
 import '../../l10n/app_strings.dart';
 import '../../protocol/client_session.dart';
@@ -93,6 +94,12 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   bool _firstFrame = false;
   bool _audioMuted = false;
 
+  /// 用户手动切换过输入模式后，不再被异步恢复的偏好覆盖。
+  bool _touchModeTouched = false;
+
+  /// 放大后单指拖动的提示，每次进入远程页只弹一次。
+  bool _zoomPanHintShown = false;
+
   /// true = 横屏锁定；false = 竖屏锁定。进入远程页默认横屏（桌面被控更合适）。
   bool _landscape = true;
 
@@ -117,10 +124,50 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       if (mounted) setState(() {});
     };
     _touch.onTransformChanged = () {
-      if (mounted) setState(() {});
+      if (!mounted) return;
+      setState(() {});
+      // 首次进入放大状态时提示新的拖动语义，避免用户仍按「拖光标」操作。
+      if (_touch.isZoomed && _touch.directTouchMode && !_zoomPanHintShown) {
+        _zoomPanHintShown = true;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            duration: const Duration(seconds: 2),
+            content: Text(L10n.t('remote.zoomPanHint')),
+          ),
+        );
+      }
     };
     _applyOrientation();
     _init();
+    unawaited(_loadTouchMode());
+  }
+
+  /// 恢复上次选择的输入模式；默认仍是触控板模式。
+  Future<void> _loadTouchMode() async {
+    final enabled = await AppSettings.loadDirectTouchMode();
+    if (!mounted || _touchModeTouched || _touch.directTouchMode == enabled) {
+      return;
+    }
+    _touch.setDirectTouchMode(enabled);
+  }
+
+  void _toggleDirectTouch() {
+    _touchModeTouched = true;
+    _cancelAllInput();
+    final enabled = !_touch.directTouchMode;
+    _touch.setDirectTouchMode(enabled); // 内部 onCursorMoved 触发重建
+    unawaited(AppSettings.saveDirectTouchMode(enabled));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        duration: const Duration(seconds: 2),
+        content: Text(
+          L10n.t(
+            enabled ? 'remote.directTouchOn' : 'remote.directTouchOff',
+          ),
+        ),
+      ),
+    );
   }
 
   Future<void> _applyOrientation() async {
@@ -764,6 +811,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                     onRightClick: () => _touch.click(right: true),
                     onToggleDrag: _touch.toggleDrag,
                     dragArmed: _touch.dragArmed || _touch.leftButtonHeld,
+                    directTouch: _touch.directTouchMode,
+                    onToggleDirectTouch: _toggleDirectTouch,
                     onControlKey: _sendControlKey,
                     onSendClipboard: () async => _clipboard?.syncNow(),
                     onToggleStats: _toggleStats,

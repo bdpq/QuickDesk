@@ -19,6 +19,7 @@ class AppSettings {
   static const _kSignalingUrl = 'signaling_url';
   static const _kApiKey = 'api_key';
   static const _kLastDeviceId = 'last_device_id';
+  static const _kDirectTouchMode = 'remote_direct_touch_mode';
 
   final String signalingUrl;
   final String apiKey;
@@ -58,6 +59,26 @@ class AppSettings {
     changes.value++;
     if (lastDeviceId != null) {
       await prefs.setString(_kLastDeviceId, lastDeviceId.trim());
+    }
+  }
+
+  /// 直接触摸模式偏好。只是 UI 偏好，读不到存储时安全降级为触控板模式；
+  /// 这样在无插件环境（widget 测试 / 预览）也不会抛 MissingPluginException。
+  static Future<bool> loadDirectTouchMode() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      return prefs.getBool(_kDirectTouchMode) ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<void> saveDirectTouchMode(bool enabled) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_kDirectTouchMode, enabled);
+    } catch (_) {
+      // 偏好写入失败不应影响远程控制本身。
     }
   }
 

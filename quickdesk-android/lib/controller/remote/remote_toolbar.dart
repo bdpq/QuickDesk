@@ -30,6 +30,8 @@ class RemoteToolbar extends StatelessWidget {
   final VoidCallback onRightClick;
   final VoidCallback onToggleDrag;
   final bool dragArmed;
+  final bool directTouch;
+  final VoidCallback onToggleDirectTouch;
   final ValueChanged<int> onControlKey;
 
   const RemoteToolbar({
@@ -57,6 +59,8 @@ class RemoteToolbar extends StatelessWidget {
     required this.onRightClick,
     required this.onToggleDrag,
     required this.dragArmed,
+    required this.directTouch,
+    required this.onToggleDirectTouch,
     required this.onControlKey,
   });
 
@@ -85,6 +89,18 @@ class RemoteToolbar extends StatelessWidget {
             ),
             tooltip: L10n.t(dragArmed ? 'remote.cancelDrag' : 'remote.armDrag'),
             onPressed: onToggleDrag,
+          ),
+          IconButton(
+            icon: Icon(
+              Icons.touch_app,
+              color: directTouch ? Colors.lightBlueAccent : Colors.white,
+            ),
+            tooltip: L10n.t(
+              directTouch
+                  ? 'remote.disableDirectTouch'
+                  : 'remote.enableDirectTouch',
+            ),
+            onPressed: onToggleDirectTouch,
           ),
           IconButton(
             icon: Icon(

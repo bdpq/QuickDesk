@@ -12,6 +12,7 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
     var help = 0;
     var fit = 0;
+    var directTouch = 0;
     int? key;
     await tester.pumpWidget(
       MaterialApp(
@@ -38,6 +39,8 @@ void main() {
             onRightClick: () {},
             onToggleDrag: () {},
             dragArmed: false,
+            directTouch: false,
+            onToggleDirectTouch: () => directTouch++,
             onControlKey: (value) => key = value,
           ),
         ),
@@ -46,8 +49,10 @@ void main() {
     expect(tester.takeException(), isNull);
     await tester.tap(find.byIcon(Icons.help_outline));
     await tester.tap(find.byIcon(Icons.zoom_out_map));
+    await tester.tap(find.byIcon(Icons.touch_app));
     expect(help, 1);
     expect(fit, 1);
+    expect(directTouch, 1);
     await tester.tap(find.byIcon(Icons.more_vert));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Esc'));

@@ -137,6 +137,7 @@ class L10n {
     'connect.errHostOffline': '对方设备离线',
     'connect.errInvalidCode': '访问码错误',
     'connect.errTooManyAttempts': '尝试次数过多，请稍后再试',
+    'connect.errForbidden': '服务器拒绝访问：请在下方「服务器设置 → API Key」填写该服务器的 API Key，保存后重试；若地址填错也请一并检查。',
     'connect.errGeneric': '连接失败: {code}',
 
     // 远程页
@@ -154,7 +155,12 @@ class L10n {
     'remote.resetZoom': '适应屏幕',
     'remote.leftHold': '正在拖拽 · 抬手释放',
     'remote.gestureHelp': '触控板操作指南',
-    'remote.gestureInstructions': '单指滑动：移动光标\n轻点：左键；双击：双击\n轻点后再次按住并滑动：拖拽，抬手释放\n长按：右键\n双指滑动：滚动（放大后也可用）\n双指捏合：缩放；继续移动双指平移画面\n放大后移动光标：画面自动跟随\n适应屏幕：恢复完整画面\n键盘：输入文字；更多菜单：Esc、Tab、方向键等',
+    'remote.gestureInstructions': '单指滑动：移动光标\n轻点：左键；双击：双击\n轻点后再次按住并滑动：拖拽，抬手释放\n长按：右键\n双指滑动：滚动（放大后也可用）\n双指捏合：缩放；继续移动双指平移画面\n放大后移动光标：画面自动跟随\n放大后（直接触摸）：单指拖动画面平移；轻点仍点哪点哪；拖远程窗口请用工具条「拖拽」\n适应屏幕：恢复完整画面\n键盘：输入文字；更多菜单：Esc、Tab、方向键等\n手指图标：切换直接触摸（轻点即点击手指位置）',
+    'remote.enableDirectTouch': '开启直接触摸（点哪点哪）',
+    'remote.disableDirectTouch': '关闭直接触摸（回到触控板）',
+    'remote.directTouchOn': '直接触摸已开启：轻点会点击手指位置；放大后单指拖动画面可平移（自动记住）',
+    'remote.directTouchOff': '已恢复触控板模式：轻点点击光标位置',
+    'remote.zoomPanHint': '已放大：单指拖动平移画面，轻点仍点哪点哪',
     'remote.leftClick': '左键点击',
     'remote.rightClick': '右键点击',
     'remote.armDrag': '拖拽：下次滑动时按住左键',
@@ -223,7 +229,10 @@ class L10n {
     'host.a11yTitle': '需要开启无障碍服务',
     'host.a11yDesc':
         '被控时需要「QuickDesk 被控输入」无障碍服务来执行远程点击与滑动。'
-        '点击下方按钮前往系统设置开启，然后重新点「开启被控」。',
+        '点击下方按钮前往系统设置开启，然后重新点「开启被控」。'
+        '若开关灰色或提示「出于安全考虑，此设置目前不可用」：先到'
+        '「设置 → 应用管理 → QuickDesk → 右上角更多 → 允许受限设置」，'
+        '再回「无障碍 → 已下载的服务 → QuickDesk 被控输入」打开。',
     'host.a11yGo': '前往无障碍设置',
     // 被控端 controller 状态消息
     'host.msgCheckA11y': '检查无障碍权限',
@@ -358,6 +367,7 @@ class L10n {
     'connect.errHostOffline': 'The device is offline',
     'connect.errInvalidCode': 'Wrong access code',
     'connect.errTooManyAttempts': 'Too many attempts, try again later',
+    'connect.errForbidden': 'Access denied by the server: enter its API Key under "Server settings" below, save, and retry. Also check the server address.',
     'connect.errGeneric': 'Connection failed: {code}',
 
     'remote.connecting': 'Connecting...',
@@ -374,7 +384,12 @@ class L10n {
     'remote.resetZoom': 'Fit screen',
     'remote.leftHold': 'Dragging · lift to release',
     'remote.gestureHelp': 'Trackpad guide',
-    'remote.gestureInstructions': 'One finger: move cursor\nTap: click; double tap: double-click\nTap, then touch and slide: drag; lift to release\nLong press: right-click\nTwo-finger slide: scroll at any zoom\nPinch: zoom; keep moving both fingers to pan\nMove cursor when zoomed: view follows automatically\nFit screen: show the entire desktop\nKeyboard: type text; More: Esc, Tab, arrows and other actions',
+    'remote.gestureInstructions': 'One finger: move cursor\nTap: click; double tap: double-click\nTap, then touch and slide: drag; lift to release\nLong press: right-click\nTwo-finger slide: scroll at any zoom\nPinch: zoom; keep moving both fingers to pan\nMove cursor when zoomed: view follows automatically\nZoomed in (direct touch): drag one finger to pan; tap still clicks where you touch; use the toolbar Drag button to drag a remote window\nFit screen: show the entire desktop\nKeyboard: type text; More: Esc, Tab, arrows and other actions\nFinger icon: toggle direct touch (tap where you touch)',
+    'remote.enableDirectTouch': 'Enable direct touch (tap where you touch)',
+    'remote.disableDirectTouch': 'Disable direct touch (back to trackpad)',
+    'remote.directTouchOn': 'Direct touch on: taps click where your finger lands; drag to pan when zoomed (remembered)',
+    'remote.directTouchOff': 'Trackpad mode: taps click at the cursor position',
+    'remote.zoomPanHint': 'Zoomed in: drag one finger to pan, tap to click where you touch',
     'remote.leftClick': 'Left click',
     'remote.rightClick': 'Right click',
     'remote.armDrag': 'Drag: hold left button on next swipe',
@@ -445,7 +460,9 @@ class L10n {
     'host.a11yDesc':
         'Sharing needs the "QuickDesk input" accessibility service to '
         'perform remote taps and swipes. Tap below to enable it in system settings, '
-        'then tap "Start sharing" again.',
+        'then tap "Start sharing" again. If the switch is greyed out, first allow '
+        'restricted settings from App info > More (three dots), then enable it '
+        'under Accessibility > Downloaded services.',
     'host.a11yGo': 'Open accessibility settings',
     'host.msgCheckA11y': 'Checking accessibility permission',
     'host.msgNeedA11y':

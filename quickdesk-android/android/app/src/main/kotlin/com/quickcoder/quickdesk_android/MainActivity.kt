@@ -1,5 +1,6 @@
 package com.quickcoder.quickdesk_android
 
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.hardware.display.DisplayManager
@@ -214,7 +215,13 @@ class MainActivity : FlutterActivity() {
 
     /** 检查本应用的无障碍服务是否已被用户启用。 */
     private fun isAccessibilityEnabled(): Boolean {
-        val expected = "$packageName/$packageName.InputAccessibilityService"
+        // 不能用 "$packageName/$packageName.InputAccessibilityService"：
+        // Manifest 里的相对类名按 namespace 展开，Kotlin 类始终在
+        // com.quickcoder.quickdesk_android 包下。dev 并行包把 applicationId
+        // 改成 ...dev 后，拼出来的组件名与系统记录的不一致，会永远返回 false。
+        val serviceClass = InputAccessibilityService::class.java
+        val expected = ComponentName(packageName, serviceClass.name).flattenToString()
+        val shortForm = "$packageName/.${serviceClass.simpleName}"
         val enabled = try {
             Settings.Secure.getInt(contentResolver, Settings.Secure.ACCESSIBILITY_ENABLED)
         } catch (e: Settings.SettingNotFoundException) {
@@ -229,6 +236,7 @@ class MainActivity : FlutterActivity() {
         splitter.setString(services)
         for (component in splitter) {
             if (component.equals(expected, ignoreCase = true)) return true
+            if (component.equals(shortForm, ignoreCase = true)) return true
         }
         return false
     }

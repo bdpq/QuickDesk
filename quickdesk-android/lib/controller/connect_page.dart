@@ -122,6 +122,9 @@ class _ConnectPageState extends State<ConnectPage> {
           'HOST_OFFLINE' => L10n.t('connect.errHostOffline'),
           'INVALID_CODE' => L10n.t('connect.errInvalidCode'),
           'TOO_MANY_ATTEMPTS' => L10n.t('connect.errTooManyAttempts'),
+          // 服务器启用了 API-Key / Origin 保护时，/v1/* 会直接返回 403
+          // FORBIDDEN。回显原始英文码对用户没有帮助，明确指到设置项。
+          'FORBIDDEN' => L10n.t('connect.errForbidden'),
           _ => L10n.t('connect.errGeneric', {'code': e.code}),
         },
       );

@@ -8,6 +8,12 @@
 ///   长按         → 右键
 ///   双指捏合     → 绕捏合中心缩放（1x–5x），不跳动
 ///   双指滑动     → 任意缩放下滚轮；捏合开始后锁定缩放/平移
+///
+/// 直接触摸模式（directTouchMode，默认关闭）：
+///   单指按下     → 先把光标定位到手指下的远程像素（点哪打哪）
+///   其余手势不变 → 轻点/双击/长按/拖拽都从手指位置开始
+///   放大后拖动   → 1:1 平移画面（与手机看放大照片一致），不动远端鼠标；
+///                  轻点才定位并点击，显式「拖拽就绪」仍优先拖远程窗口
 library;
 
 import 'dart:async';
@@ -50,6 +56,11 @@ class TouchInputController {
   bool leftButtonHeld = false;
   bool dragArmed = false;
 
+  /// false = 触控板模式（默认，与 RustDesk / WebClient 手势契约一致）；
+  /// true = 直接触摸模式：按下即把虚拟光标定位到手指下的远程像素。
+  /// 默认关闭以保证既有轻点/双击/拖拽行为完全不变。
+  bool directTouchMode = false;
+
   void Function()? onCursorMoved;
   void Function()? onTransformChanged;
 
@@ -71,9 +82,17 @@ class TouchInputController {
   String _twoFingerMode = 'pending';
   bool _suppressUntilUp = false;
 
+  /// 本次单指手势是否是「放大浏览」：拖动画布、轻点才定位远端光标。
+  /// 显式拖拽（工具栏按钮）或已按住左键时不进入该状态。
+  bool _panGesture = false;
+
   TouchInputController(this.dcHandler);
 
   bool get isZoomed => scale > 1.05;
+
+  /// 直接触摸模式下放大后，单指手势优先用于平移画面。
+  /// 触控板模式保持「拖光标 + 自动跟镜」，不改动既有手势契约。
+  bool get panWhenZoomed => directTouchMode && isZoomed;
 
   Offset get _center => Offset(viewportWidth / 2, viewportHeight / 2);
 
@@ -145,12 +164,26 @@ class TouchInputController {
       _moved = false;
       _twoFingerMode = 'pending';
       _secondTap = _isSecondTap(event.position);
+      // 放大 + 直接触摸：单指拖动改为平移画面，轻点时才定位远端光标。
+      // 平移优先于「双击后拖动」，避免连续拖动浏览时误按住远程左键。
+      _panGesture = panWhenZoomed && !leftButtonHeld && !dragArmed;
       if (!_secondTap) {
         _lastTapTime = null;
         _lastTapPos = null;
         if (!leftButtonHeld && !dragArmed) _startLongPress();
       }
+      // 直接触摸：按下即定位，轻点/双击/长按/拖拽都从手指位置开始。
+      // 显式「拖拽就绪」时保留原光标，不覆盖用户已经准备好的起点；
+      // 放大浏览手势把定位推迟到「确实是轻点/长按」时，避免拖画布时
+      // 远端鼠标跟着手指乱跳、触发 hover。
+      if (directTouchMode &&
+          !_panGesture &&
+          !leftButtonHeld &&
+          !dragArmed) {
+        _placeCursorAtScreen(event.position);
+      }
     } else if (pointerCount == 2) {
+      _panGesture = false;
       dragArmed = false;
       _cancelLongPress();
       if (_dragging) {
@@ -182,6 +215,7 @@ class TouchInputController {
   }) {
     if (_suppressUntilUp) return;
     if (pointerCount == 1 && _activeTouches == 1) {
+      final wasMoved = _moved;
       final dx = event.position.dx - _lastSinglePos.dx;
       final dy = event.position.dy - _lastSinglePos.dy;
       _lastSinglePos = event.position;
@@ -191,6 +225,16 @@ class TouchInputController {
         _cancelLongPress();
       }
       if (!_moved) return;
+
+      if (_panGesture) {
+        // 阈值内的小位移此前被丢弃，首次越过阈值时用累计位移补齐，
+        // 之后按增量平移，画面 1:1 跟手。
+        _panBy(
+          wasMoved ? dx : event.position.dx - _touchStartPos.dx,
+          wasMoved ? dy : event.position.dy - _touchStartPos.dy,
+        );
+        return;
+      }
 
       // RustDesk 鼠标模式：单指始终移动光标；放大时画布自动跟随
       // A second tap followed by movement is the common mobile drag gesture.
@@ -283,6 +327,9 @@ class TouchInputController {
         dragArmed = false;
         onCursorMoved?.call();
       } else if (!_moved) {
+        // 放大浏览手势在按下时未定位远端光标，确认是轻点后再定位，
+        // 保证「点哪点哪」，同时拖动画布的过程不会移动远端鼠标。
+        if (_panGesture) _placeCursorAtScreen(_touchStartPos);
         // Emit every tap immediately so both clients produce the same
         // standard two-click sequence for a double-click.
         _sendClick(MouseButton.left);
@@ -306,6 +353,7 @@ class TouchInputController {
     }
 
     if (remainingPointers == 0) {
+      _panGesture = false;
       _twoFingerMode = 'pending';
       _pinchStartDist = 0;
     }
@@ -319,6 +367,7 @@ class TouchInputController {
 
   void cancelGesture({bool notify = true}) {
     _cancelLongPress();
+    _panGesture = false;
     if (leftButtonHeld) _releaseLeftButton(notify: false);
     _dragging = false;
     dragArmed = false;
@@ -342,6 +391,16 @@ class TouchInputController {
     final arm = !dragArmed && !leftButtonHeld;
     cancelGesture();
     dragArmed = arm;
+    onCursorMoved?.call();
+  }
+
+  /// 切换「直接触摸 / 触控板」。切换时终止进行中的手势并清掉抑制标志，
+  /// 避免上一次手势残留的按住状态或「等所有手指抬起」状态吃掉下一次触摸。
+  void setDirectTouchMode(bool enabled) {
+    if (directTouchMode == enabled) return;
+    cancelGesture(notify: false);
+    directTouchMode = enabled;
+    _suppressUntilUp = false;
     onCursorMoved?.call();
   }
 
@@ -427,6 +486,8 @@ class TouchInputController {
     _longPressTimer = Timer(_longPressTimeout, () {
       _longPressTimer = null;
       if (!_moved && !leftButtonHeld) {
+        // 放大浏览手势把定位推迟了，长按右键前先补上手指位置。
+        if (_panGesture) _placeCursorAtScreen(_touchStartPos);
         _sendClick(MouseButton.right);
         _moved = true;
       }
@@ -456,6 +517,16 @@ class TouchInputController {
     final maxY = math.max(0.0, (rect.height * scale - viewportHeight) / 2);
     translateX = translateX.clamp(-maxX, maxX);
     translateY = translateY.clamp(-maxY, maxY);
+  }
+
+  /// 放大浏览：手指位移直接加到画布平移上（1:1 跟手），
+  /// 与捏合缩放共用 [_clampTranslate] 的边界，避免画面跑飞。
+  void _panBy(double dx, double dy) {
+    if (!isZoomed) return;
+    translateX += dx;
+    translateY += dy;
+    _clampTranslate();
+    onTransformChanged?.call();
   }
 
   /// 光标靠近屏幕边缘时自动平移画布（RustDesk / WebClient 跟镜）
@@ -508,6 +579,52 @@ class TouchInputController {
       c.dx + translateX + (localX - c.dx) * scale,
       c.dy + translateY + (localY - c.dy) * scale,
     );
+  }
+
+  /// 屏幕坐标 → 远程显示器（display-local）像素坐标，与
+  /// [_cursorScreenPosition] 互为逆变换：
+  ///   screen = center + translate + (local - center) * scale
+  ///   local  = center + (screen - center - translate) / scale
+  /// letterbox 黑边上的触点会被钳到画面边缘，与视频渲染共用 fitContain。
+  Offset? _remotePointFromScreen(Offset screen) {
+    if (remoteWidth <= 0 || remoteHeight <= 0) return null;
+    if (viewportWidth <= 0 || viewportHeight <= 0) return null;
+    if (scale <= 0) return null;
+
+    final c = _center;
+    final local = Offset(
+      c.dx + (screen.dx - c.dx - translateX) / scale,
+      c.dy + (screen.dy - c.dy - translateY) / scale,
+    );
+    final rect = fitContain(
+      contentW: remoteWidth.toDouble(),
+      contentH: remoteHeight.toDouble(),
+      boxW: viewportWidth,
+      boxH: viewportHeight,
+    );
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    return Offset(
+      ((local.dx - rect.left) / rect.width * remoteWidth)
+          .clamp(0.0, remoteWidth - 1.0),
+      ((local.dy - rect.top) / rect.height * remoteHeight)
+          .clamp(0.0, remoteHeight - 1.0),
+    );
+  }
+
+  /// 直接触摸模式：先移动远端鼠标到手指位置，再让后续点击落在同一坐标。
+  /// 单独发一条移动事件，兼容只按坐标更新光标、忽略按下事件坐标的被控端。
+  void _placeCursorAtScreen(Offset screen) {
+    final point = _remotePointFromScreen(screen);
+    if (point == null) return;
+    cursorX = point.dx;
+    cursorY = point.dy;
+    dcHandler.sendMouseEvent(
+      MouseEventMsg(
+        x: cursorX.round() + remoteOriginX,
+        y: cursorY.round() + remoteOriginY,
+      ),
+    );
+    onCursorMoved?.call();
   }
 
   /// 供 UI 画虚拟光标用
