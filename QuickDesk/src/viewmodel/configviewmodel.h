@@ -13,6 +13,9 @@ class ConfigViewModel : public QObject {
     Q_PROPERTY(bool remoteTabBarPinned READ remoteTabBarPinned WRITE setRemoteTabBarPinned NOTIFY remoteTabBarPinnedChanged)
     Q_PROPERTY(bool remoteDesktopMiniMapVisible READ remoteDesktopMiniMapVisible WRITE setRemoteDesktopMiniMapVisible NOTIFY remoteDesktopMiniMapVisibleChanged)
     Q_PROPERTY(QString apiKey READ apiKey WRITE setApiKey NOTIFY apiKeyChanged)
+    // Read-only: writes go through MainController::applyCustomAccessCode so the
+    // host process and the signaling server are updated in the same step.
+    Q_PROPERTY(QString customAccessCode READ customAccessCode NOTIFY customAccessCodeChanged)
 
 public:
     ConfigViewModel(QObject* parent = nullptr);
@@ -45,6 +48,8 @@ public:
     QString apiKey();
     void setApiKey(const QString& value);
 
+    QString customAccessCode();
+
 signals:
     void darkThemeChanged(int value);
     void languageChanged(const QString& value);
@@ -55,4 +60,5 @@ signals:
     void remoteTabBarPinnedChanged(bool value);
     void remoteDesktopMiniMapVisibleChanged(bool value);
     void apiKeyChanged(const QString& value);
+    void customAccessCodeChanged(const QString& value);
 };

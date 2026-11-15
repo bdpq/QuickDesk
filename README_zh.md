@@ -138,6 +138,7 @@ AI配置
 ### 连接管理
 - 9 位设备 ID + 临时访问码机制
 - 访问码自动刷新（可配置 30 分钟~24 小时或永不刷新）
+- 自定义固定访问码（设置 → 安全，6 位数字，重启不变）
 - 多标签页同时连接多台远程设备
 - 连接历史记录与快速重连
 - 实时连接状态监控
@@ -253,6 +254,29 @@ graph TD
 2. 被控端会自动生成 **设备 ID** 和 **访问码**
 3. 在主控端输入被控端的设备 ID 和访问码，点击**连接**
 4. 连接成功后即可远程控制
+
+### 自定义固定访问码
+
+默认访问码由被控端随机生成并按「设置 → 安全 → 访问码自动刷新」定时轮换。若想长期固定：
+
+1. 打开被控端 **设置 → 安全 → Custom Fixed Access Code（自定义固定访问码）**；
+2. 输入恰好 **6 位数字** → 点「应用」；
+3. 保存时会自动把「访问码自动刷新」切到「永不」并禁用该下拉框，同时让被控服务
+   断开重连一次，把新码通过 native-messaging 的 `connect` 消息注入 host 进程；
+   host 回报新码后由 Qt 用 `device_secret` 上报信令服务器，保证服务器、host、
+   SPAKE2 共享密钥三者一致。
+
+设置页会同时显示「已设置」与「被控服务当前」两个码。**若两者不一致，重启 QuickDesk 即可**
+（自定义码持久化在本地配置，启动时 `connect` 消息会再次带上它）。点「清除」恢复默认
+随机码 + 2 小时自动刷新。
+
+> 实现位置：`MainController::applyCustomAccessCode()` /
+> `clearCustomAccessCode()`、`LocalConfigCenter::customAccessCode`、
+> `qml/pages/SettingsPage.qml`；Android 端在被控页访问码卡片的铅笔图标，
+> 走 `HostController::setCustomAccessCode()` + `PUT /v1/devices/:id/access-code`。
+>
+> 固定 6 位数字只有 100 万种组合，服务器有防爆破限流，但仍建议只在家庭/内网/
+> 自托管环境使用。修改会断开当前正在进行的远程会话。
 
 ### 静默安装（Windows 安装包）
 

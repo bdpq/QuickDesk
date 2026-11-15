@@ -1855,6 +1855,42 @@ Frame rate: %3 fps</source>
         <source>Skills directory added. Skill host will reload.</source>
         <translation>Skills目录已添加。Skill Host将重新加载。</translation>
     </message>
+    <message>
+        <source>Custom Fixed Access Code</source>
+        <translation>自定义固定访问码</translation>
+    </message>
+    <message>
+        <source>Set your own 6-digit access code. It stays the same across restarts and disables auto-refresh. Use only on trusted networks.</source>
+        <translation>设置自己的 6 位数字访问码。保存后长期不变、重启不丢失，并会关闭自动刷新；仅建议在可信网络中使用。</translation>
+    </message>
+    <message>
+        <source>6 digits</source>
+        <translation>6 位数字</translation>
+    </message>
+    <message>
+        <source>Apply</source>
+        <translation>应用</translation>
+    </message>
+    <message>
+        <source>Access code must be exactly 6 digits</source>
+        <translation>访问码必须恰好是 6 位数字</translation>
+    </message>
+    <message>
+        <source>Code saved. Restart QuickDesk to apply it.</source>
+        <translation>访问码已保存，重启 QuickDesk 后生效。</translation>
+    </message>
+    <message>
+        <source>Fixed code saved. Reconnecting host; if the displayed code does not change, restart QuickDesk.</source>
+        <translation>固定访问码已保存，正在重新连接被控服务；若显示的访问码未变化，请重启 QuickDesk。</translation>
+    </message>
+    <message>
+        <source>Fixed code cleared. A random code will be generated.</source>
+        <translation>固定访问码已清除，将重新生成随机码。</translation>
+    </message>
+    <message>
+        <source>Configured: %1  |  Host reports: %2</source>
+        <translation>已设置：%1  |  被控服务当前：%2</translation>
+    </message>
 </context>
 <context>
     <name>TrustConfirmationDialog</name>

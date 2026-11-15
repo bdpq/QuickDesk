@@ -278,8 +278,23 @@ class HostController {
     await _session?.disconnectClient(clientId, connectedAt: connectedAt);
   }
 
-  /// 用户手动重设访问码
-  Future<void> regenerateAccessCode() async {
+  /// 用户手动重设访问码（随机 6 位数字）
+  Future<void> regenerateAccessCode() =>
+      _applyAccessCode(HostCredentialStore.generateAccessCode());
+
+  /// 用户自定义固定访问码。
+  /// 保存后不会自动刷新；下次开启被控时 host 与服务器都用这个码。
+  Future<void> setCustomAccessCode(String code) async {
+    final normalized = code.trim();
+    if (!HostCredentialStore.isValidCustomAccessCode(normalized)) {
+      throw ArgumentError('Access code must be exactly 6 digits');
+    }
+    await _applyAccessCode(normalized);
+  }
+
+  /// 随机刷新与自定义码共用的更新流程：停服校验 → 上报服务器 → 落盘。
+  /// 顺序不能反：只有服务器接受后才写入本地，避免断电/离线导致两端不一致。
+  Future<void> _applyAccessCode(String code) async {
     if (_disposed || _starting != null || _stopping != null) return;
     final generation = _generation;
     if (_stage != HostStage.idle && _stage != HostStage.error) {
@@ -290,7 +305,6 @@ class HostController {
     if (_updatingAccessCode) return;
     _updatingAccessCode = true;
     try {
-      final code = HostCredentialStore.generateAccessCode();
       await _api.setAccessCode(
         deviceId: _creds!.deviceId!,
         deviceSecret: _creds!.deviceSecret!,

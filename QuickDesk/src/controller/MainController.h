@@ -118,6 +118,26 @@ public:
      * @brief Refresh access code
      */
     Q_INVOKABLE void refreshAccessCode();
+
+    /**
+     * @brief Apply a user-chosen fixed access code (exactly 6 ASCII digits).
+     *
+     * Persists the code, disables the auto-refresh timer, then reconnects the
+     * host process with the new code so the host, the Qt UI and the signaling
+     * server all converge on the same value (SPAKE2 derives its shared secret
+     * from deviceId + accessCode).
+     *
+     * @return empty on success, "INVALID_FORMAT" when the code is malformed,
+     *         "NOT_READY" when the host process is not reachable (the code is
+     *         still persisted and will be applied on the next start).
+     */
+    Q_INVOKABLE QString applyCustomAccessCode(const QString& code);
+
+    /**
+     * @brief Clear the fixed code, restore the default 2-hour auto-refresh and
+     *        let the host generate a fresh random code.
+     */
+    Q_INVOKABLE void clearCustomAccessCode();
     
     /**
      * @brief Reset access code refresh timer (called after manual refresh)
@@ -294,6 +314,9 @@ private:
     
     void onAccessCodeRefreshTimer();
     void updateAccessCodeRefreshTimer(int remainingSeconds = -1);
+    // Disconnect/reconnect the host so it picks up a new access code from the
+    // "connect" native-messaging message. Empty code = host generates one.
+    QString reconnectHostWithAccessCode(const QString& code);
     QString getDefaultServerUrl() const;
     QString getSkillHostBinaryPath() const;
     // Locate the directory that holds built-in skills (sys-info, file-ops, ...).

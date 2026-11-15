@@ -183,6 +183,38 @@ class _HostPageState extends State<HostPage> {
     }
   }
 
+  Future<void> _editCustomCode() async {
+    final controller = _controller;
+    if (controller == null || !_canChangeCode) return;
+    final result = await showCustomAccessCodeDialog(
+      context,
+      initialCode: _status.accessCode ?? '',
+    );
+    if (result == null || !mounted || !identical(controller, _controller)) {
+      return;
+    }
+    final generation = _configuration;
+    setState(() => _busy = true);
+    try {
+      await controller.setCustomAccessCode(result);
+      if (mounted && generation == _configuration) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(L10n.t('host.customCodeSaved'))),
+        );
+      }
+    } catch (_) {
+      if (mounted && generation == _configuration) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(L10n.t('host.customCodeFailed'))),
+        );
+      }
+    } finally {
+      if (mounted && generation == _configuration) {
+        setState(() => _busy = false);
+      }
+    }
+  }
+
   Future<void> _disconnectClient(ConnectedHostClient client) async {
     final controller = _controller;
     final confirmed = await showDialog<bool>(
@@ -211,6 +243,12 @@ class _HostPageState extends State<HostPage> {
   }
 
   bool get _online => _status.stage == HostStage.online;
+
+  /// 访问码只能在被控完全停止时修改，否则正在进行的 SPAKE2 会话会失配。
+  bool get _canChangeCode =>
+      !_busy &&
+      _controller != null &&
+      (_status.stage == HostStage.idle || _status.stage == HostStage.error);
 
   @override
   Widget build(BuildContext context) {
@@ -394,13 +432,22 @@ class _HostPageState extends State<HostPage> {
                   ),
                 ),
                 IconButton(
+                  tooltip: L10n.t('host.customCode'),
+                  onPressed: _canChangeCode ? _editCustomCode : null,
+                  icon: const Icon(Icons.edit),
+                ),
+                IconButton(
                   tooltip: L10n.t('host.regenCode'),
-                  onPressed: _online || _busy || _controller == null
-                      ? null
-                      : _regenerateCode,
+                  onPressed: _canChangeCode ? _regenerateCode : null,
                   icon: const Icon(Icons.refresh),
                 ),
               ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              L10n.t('host.customCodeHint'),
+              style: Theme.of(context).textTheme.bodySmall
+                  ?.copyWith(color: scheme.outline),
             ),
           ],
         ),
@@ -553,5 +600,96 @@ class _HostPageState extends State<HostPage> {
     _controller?.dispose();
     WakelockPlus.disable();
     super.dispose();
+  }
+}
+
+/// 弹出自定义固定访问码对话框；确认返回 6 位数字，取消返回 null。
+/// 控制器由 [CustomAccessCodeDialog] 自己创建并释放，避免 showDialog 的
+/// Future 在退出动画前完成、外部提前 dispose 造成 framework 断言。
+Future<String?> showCustomAccessCodeDialog(
+  BuildContext context, {
+  required String initialCode,
+}) =>
+    showDialog<String>(
+      context: context,
+      builder: (_) => CustomAccessCodeDialog(initialCode: initialCode),
+    );
+
+/// 自定义固定访问码输入对话框：只允许 6 位数字，格式与随机码一致。
+class CustomAccessCodeDialog extends StatefulWidget {
+  const CustomAccessCodeDialog({super.key, required this.initialCode});
+
+  final String initialCode;
+
+  @override
+  State<CustomAccessCodeDialog> createState() =>
+      _CustomAccessCodeDialogState();
+}
+
+class _CustomAccessCodeDialogState extends State<CustomAccessCodeDialog> {
+  final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _codeCtrl = TextEditingController(
+    text: widget.initialCode,
+  );
+  bool _obscure = false; // 访问码在被控页本就明文展示，这里默认可见便于修改
+
+  @override
+  void dispose() {
+    _codeCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(L10n.t('host.customCodeTitle')),
+      content: Form(
+        key: _formKey,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(L10n.t('host.customCodeDesc')),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: _codeCtrl,
+              autofocus: true,
+              keyboardType: TextInputType.number,
+              maxLength: 6,
+              obscureText: _obscure,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              validator: (value) =>
+                  HostCredentialStore.isValidCustomAccessCode(value ?? '')
+                      ? null
+                      : L10n.t('host.customCodeInvalid'),
+              decoration: InputDecoration(
+                labelText: L10n.t('host.customCodeLabel'),
+                counterText: '',
+                suffixIcon: IconButton(
+                  icon: Icon(
+                    _obscure ? Icons.visibility : Icons.visibility_off,
+                  ),
+                  onPressed: () => setState(() => _obscure = !_obscure),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: Text(L10n.t('common.cancel')),
+        ),
+        FilledButton(
+          onPressed: () {
+            if (_formKey.currentState?.validate() ?? false) {
+              Navigator.pop(context, _codeCtrl.text.trim());
+            }
+          },
+          child: Text(L10n.t('host.customCodeSave')),
+        ),
+      ],
+    );
   }
 }

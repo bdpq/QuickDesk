@@ -120,4 +120,9 @@ class HostCredentialStore {
 
   /// 生成一个随机 6 位数字访问码
   static String generateAccessCode() => randomDigits(6);
+
+  /// 自定义访问码必须与系统随机生成的格式一致：恰好 6 位 ASCII 数字。
+  /// 主控端的数字键盘、Windows host 进程以及 SPAKE2 共享密钥派生都按此约定。
+  static bool isValidCustomAccessCode(String code) =>
+      RegExp(r'^[0-9]{6}$').hasMatch(code.trim());
 }

@@ -14,6 +14,7 @@ ConfigViewModel::ConfigViewModel(QObject* parent)
     connect(&core::LocalConfigCenter::instance(), &core::LocalConfigCenter::signalRemoteTabBarPinnedChanged, this, &ConfigViewModel::remoteTabBarPinnedChanged);
     connect(&core::LocalConfigCenter::instance(), &core::LocalConfigCenter::signalRemoteDesktopMiniMapVisibleChanged, this, &ConfigViewModel::remoteDesktopMiniMapVisibleChanged);
     connect(&core::LocalConfigCenter::instance(), &core::LocalConfigCenter::signalApiKeyChanged, this, &ConfigViewModel::apiKeyChanged);
+    connect(&core::LocalConfigCenter::instance(), &core::LocalConfigCenter::signalCustomAccessCodeChanged, this, &ConfigViewModel::customAccessCodeChanged);
 }
 
 ConfigViewModel::~ConfigViewModel()
@@ -112,4 +113,9 @@ QString ConfigViewModel::apiKey()
 void ConfigViewModel::setApiKey(const QString& value)
 {
     core::LocalConfigCenter::instance().setApiKey(value);
+}
+
+QString ConfigViewModel::customAccessCode()
+{
+    return core::LocalConfigCenter::instance().customAccessCode();
 }

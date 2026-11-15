@@ -46,6 +46,17 @@ class L10n {
     'host.disconnectConfirm': '断开此客户端？对方仍可凭有效访问码重新连接。',
     'host.rotateHint': '请先停止被控，再刷新访问码；新访问码在下次开启被控时生效。',
     'host.codeFailed': '访问码更新失败，请检查网络后重试。',
+    'host.customCode': '自定义固定访问码',
+    'host.customCodeTitle': '设置固定访问码',
+    'host.customCodeDesc':
+        '输入 6 位数字作为固定访问码。保存后长期不变，重启或重装前请牢记；'
+        '仅建议在可信网络中使用。',
+    'host.customCodeLabel': '6 位数字访问码',
+    'host.customCodeInvalid': '请输入 6 位数字',
+    'host.customCodeSave': '保存',
+    'host.customCodeSaved': '访问码已更新，下次开启被控时生效',
+    'host.customCodeFailed': '访问码设置失败，请先停止被控并检查网络',
+    'host.customCodeHint': '铅笔图标可自定义固定码；刷新图标可重新生成随机码。',
 
     'account.error.PASSWORD_WEAK': '密码不符合服务器要求',
     'account.logoutOffline': '已清除本机登录，但服务器未确认撤销会话。请在联网后从其他客户端检查账户会话。',
@@ -274,6 +285,17 @@ class L10n {
     'host.rotateHint': 'Stop hosting before rotating the access code. The new code applies when hosting starts again.',
     'host.codeFailed':
         'Could not update access code. Check the network and retry.',
+    'host.customCode': 'Custom fixed access code',
+    'host.customCodeTitle': 'Set a fixed access code',
+    'host.customCodeDesc':
+        'Enter 6 digits as a permanent access code. It stays the same across '
+        'restarts and app updates; use it only on trusted networks.',
+    'host.customCodeLabel': '6-digit access code',
+    'host.customCodeInvalid': 'Enter exactly 6 digits',
+    'host.customCodeSave': 'Save',
+    'host.customCodeSaved': 'Access code updated. Applies when sharing starts again',
+    'host.customCodeFailed': 'Could not set access code. Stop sharing, check the network and retry',
+    'host.customCodeHint': 'Pencil: set a fixed code. Refresh: generate a random one.',
 
     'account.error.PASSWORD_WEAK': 'Password does not meet server requirements',
     'account.logoutOffline': 'Signed out locally, but server revocation was not confirmed. Check account sessions from another client when online.',

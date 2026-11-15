@@ -155,6 +155,8 @@ Item {
                             
                             QDComboBox {
                                 id: accessCodeRefreshCombo
+                                // A fixed code must never be rotated by the timer.
+                                enabled: configViewModel.customAccessCode.length === 0
                                 model: ListModel {
                                     id: accessCodeRefreshModel
                                 }
@@ -201,6 +203,95 @@ Item {
                                     }
                                     return 3  // Default to 2 hours if not found
                                 }
+                            }
+                        }
+
+                        // Custom fixed access code
+                        Column {
+                            width: parent.width
+                            spacing: Theme.spacingXSmall
+
+                            Rectangle { width: parent.width; height: 1; color: Theme.border }
+
+                            Text {
+                                text: qsTr("Custom Fixed Access Code")
+                                font.pixelSize: Theme.fontSizeMedium
+                                color: Theme.text
+                            }
+
+                            Text {
+                                text: qsTr("Set your own 6-digit access code. It stays the same across restarts and disables auto-refresh. Use only on trusted networks.")
+                                font.pixelSize: Theme.fontSizeSmall
+                                color: Theme.textSecondary
+                                wrapMode: Text.WordWrap
+                                width: parent.width
+                            }
+
+                            Row {
+                                width: parent.width
+                                spacing: Theme.spacingSmall
+
+                                QDTextField {
+                                    id: customAccessCodeField
+                                    width: parent.width - applyCustomCodeBtn.width
+                                           - (clearCustomCodeBtn.visible ? clearCustomCodeBtn.width : 0)
+                                           - parent.spacing * (clearCustomCodeBtn.visible ? 2 : 1)
+                                    placeholderText: qsTr("6 digits")
+                                    maximumLength: 6
+                                    inputMethodHints: Qt.ImhDigitsOnly
+                                    text: configViewModel.customAccessCode
+                                }
+
+                                QDButton {
+                                    id: applyCustomCodeBtn
+                                    text: qsTr("Apply")
+                                    iconText: FluentIconGlyph.saveGlyph
+                                    buttonType: QDButton.Type.Primary
+                                    onClicked: {
+                                        if (!root.mainController)
+                                            return
+                                        var code = customAccessCodeField.text.trim()
+                                        if (!/^[0-9]{6}$/.test(code)) {
+                                            root.showToast(qsTr("Access code must be exactly 6 digits"), QDToast.Type.Error)
+                                            return
+                                        }
+                                        var err = root.mainController.applyCustomAccessCode(code)
+                                        if (err === "INVALID_FORMAT") {
+                                            root.showToast(qsTr("Access code must be exactly 6 digits"), QDToast.Type.Error)
+                                        } else if (err === "NOT_READY") {
+                                            root.showToast(qsTr("Code saved. Restart QuickDesk to apply it."), QDToast.Type.Info)
+                                        } else {
+                                            customAccessCodeField.text = code
+                                            root.showToast(qsTr("Fixed code saved. Reconnecting host; if the displayed code does not change, restart QuickDesk."), QDToast.Type.Success)
+                                        }
+                                    }
+                                }
+
+                                QDButton {
+                                    id: clearCustomCodeBtn
+                                    text: qsTr("Clear")
+                                    iconText: FluentIconGlyph.deleteGlyph
+                                    visible: configViewModel.customAccessCode.length > 0
+                                    onClicked: {
+                                        if (!root.mainController)
+                                            return
+                                        root.mainController.clearCustomAccessCode()
+                                        customAccessCodeField.text = ""
+                                        root.showToast(qsTr("Fixed code cleared. A random code will be generated."), QDToast.Type.Success)
+                                    }
+                                }
+                            }
+
+                            Text {
+                                visible: configViewModel.customAccessCode.length > 0
+                                text: qsTr("Configured: %1  |  Host reports: %2")
+                                        .arg(configViewModel.customAccessCode)
+                                        .arg(root.mainController && root.mainController.accessCode
+                                             ? root.mainController.accessCode : "-")
+                                font.pixelSize: Theme.fontSizeSmall
+                                color: Theme.textSecondary
+                                wrapMode: Text.WordWrap
+                                width: parent.width
                             }
                         }
 

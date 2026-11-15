@@ -51,6 +51,21 @@ QString firstReachableIpv4Address() {
     }
     return QString();
 }
+
+// Custom access codes must match the format the host generates (6 ASCII
+// digits) so the numeric keypads on the controlling clients keep working.
+bool isSixDigitAccessCode(const QString& code) {
+    if (code.size() != 6) {
+        return false;
+    }
+    for (const QChar ch : code) {
+        const char c = ch.toLatin1();
+        if (c < '0' || c > '9') {
+            return false;
+        }
+    }
+    return true;
+}
 }
 
 namespace quickdesk {
@@ -190,8 +205,13 @@ MainController::MainController(QObject* parent)
         if (currentCode.isEmpty()) {
             return;
         }
-        core::LocalConfigCenter::instance().setSavedAccessCode(currentCode);
-        LOG_INFO("Saved access code for 'never refresh' mode: {}", currentCode.toStdString());
+        auto& cfg = core::LocalConfigCenter::instance();
+        const QString fixedCode = cfg.customAccessCode();
+        // A configured fixed code must survive host-generated code changes.
+        // The cloud sync below still uses the host's actual code so the
+        // server always matches the SPAKE2 secret used by the host.
+        cfg.setSavedAccessCode(fixedCode.isEmpty() ? currentCode : fixedCode);
+        LOG_INFO("Saved access code for fixed / never-refresh mode");
 
         // §2.23: access_code upload is independent of user login state —
         // it uses Bearer device_secret. The PUT only succeeds once the
@@ -490,10 +510,67 @@ void MainController::showRemoteWindowForDevice(const QString& deviceId)
 
 void MainController::refreshAccessCode()
 {
+    // A fixed code is deliberately not rotatable: clearing it is the only
+    // way back to random codes, otherwise the host and the UI would diverge.
+    if (!core::LocalConfigCenter::instance().customAccessCode().isEmpty()) {
+        LOG_WARN("Manual refresh ignored while a custom fixed access code is active");
+        return;
+    }
     m_hostManager->refreshAccessCode();
     
     // Reset auto-refresh timer when user manually refreshes
     resetAccessCodeRefreshTimer();
+}
+
+QString MainController::applyCustomAccessCode(const QString& code)
+{
+    const QString normalized = code.trimmed();
+    if (!isSixDigitAccessCode(normalized)) {
+        LOG_WARN("Rejected custom access code: expected exactly 6 digits");
+        return QStringLiteral("INVALID_FORMAT");
+    }
+
+    auto& cfg = core::LocalConfigCenter::instance();
+    cfg.setCustomAccessCode(normalized);
+    cfg.setSavedAccessCode(normalized);
+    // A fixed code must never be replaced by the periodic timer. The
+    // signalAccessCodeRefreshIntervalChanged handler stops the timer for -1.
+    cfg.setAccessCodeRefreshInterval(-1);
+
+    LOG_INFO("Custom fixed access code saved; reconnecting host to apply it");
+    return reconnectHostWithAccessCode(normalized);
+}
+
+void MainController::clearCustomAccessCode()
+{
+    auto& cfg = core::LocalConfigCenter::instance();
+    cfg.setCustomAccessCode("");
+    cfg.setSavedAccessCode("");
+    // Restore the default interval; the config-changed handler restarts the
+    // timer and clears the persisted next-refresh timestamp.
+    cfg.setAccessCodeRefreshInterval(120);
+
+    LOG_INFO("Custom fixed access code cleared; reconnecting host for a random code");
+    (void)reconnectHostWithAccessCode(QString());
+}
+
+QString MainController::reconnectHostWithAccessCode(const QString& code)
+{
+    NativeMessaging* messaging =
+        m_processManager ? m_processManager->hostMessaging() : nullptr;
+    if (!m_hostManager || !messaging || !messaging->isReady()) {
+        // The code is persisted, so initialize() will inject it on next start.
+        LOG_WARN("Host messaging not ready; custom access code will apply on next start");
+        return QStringLiteral("NOT_READY");
+    }
+
+    m_hostManager->disconnectFromServer();
+    // Give the host a moment to tear down the old signaling session before
+    // sending a new "connect" carrying the access code.
+    QTimer::singleShot(600, this, [this, code]() {
+        m_hostManager->connectToServer(getDefaultServerUrl(), code);
+    });
+    return QString();
 }
 
 void MainController::resetAccessCodeRefreshTimer()
@@ -722,19 +799,26 @@ void MainController::onHostProcessStarted()
             emit hostServerStatusChanged();
             
             QString savedAccessCode;
-            int interval = core::LocalConfigCenter::instance().accessCodeRefreshInterval();
-            if (interval == -1) {
+            auto& cfg = core::LocalConfigCenter::instance();
+            const QString customCode = cfg.customAccessCode();
+            int interval = cfg.accessCodeRefreshInterval();
+            if (!customCode.isEmpty()) {
+                // A user-chosen fixed code always wins, regardless of the
+                // refresh interval. Never print it to the log.
+                savedAccessCode = customCode;
+                LOG_INFO("Using custom fixed access code for host connect");
+            } else if (interval == -1) {
                 // "Never refresh" mode: always use saved access code
-                savedAccessCode = core::LocalConfigCenter::instance().savedAccessCode();
+                savedAccessCode = cfg.savedAccessCode();
                 if (!savedAccessCode.isEmpty()) {
                     LOG_INFO("Using saved access code for 'never refresh' mode: {}", savedAccessCode.toStdString());
                 }
             } else if (interval > 0) {
                 // Timed refresh mode: use saved access code if next refresh time hasn't expired
-                QString nextRefreshTimeStr = core::LocalConfigCenter::instance().accessCodeNextRefreshTime();
+                QString nextRefreshTimeStr = cfg.accessCodeNextRefreshTime();
                 QDateTime nextRefreshTime = QDateTime::fromString(nextRefreshTimeStr, Qt::ISODate);
                 if (nextRefreshTime.isValid() && nextRefreshTime > QDateTime::currentDateTime()) {
-                    savedAccessCode = core::LocalConfigCenter::instance().savedAccessCode();
+                    savedAccessCode = cfg.savedAccessCode();
                     if (!savedAccessCode.isEmpty()) {
                         int remainingSecs = QDateTime::currentDateTime().secsTo(nextRefreshTime);
                         LOG_INFO("Resuming saved access code, remaining {}s until next refresh", remainingSecs);
@@ -914,7 +998,18 @@ void MainController::onHostReady(const QString& deviceId, const QString& accessC
     m_accessCodeRefreshIntervalMinutes = core::LocalConfigCenter::instance().accessCodeRefreshInterval();
     LOG_INFO("Access code refresh interval: {} minutes", m_accessCodeRefreshIntervalMinutes);
     
-    if (m_accessCodeRefreshIntervalMinutes == -1) {
+    const QString fixedCode = core::LocalConfigCenter::instance().customAccessCode();
+    if (!fixedCode.isEmpty()) {
+        // The host receives the fixed code in the "connect" message. If it
+        // reports something else, keep the user's choice persisted and ask
+        // for a restart instead of silently replacing it with a random code.
+        if (accessCode != fixedCode) {
+            LOG_WARN("Host access code differs from the configured fixed code; "
+                     "restart QuickDesk to re-apply the fixed code");
+        }
+        core::LocalConfigCenter::instance().setSavedAccessCode(fixedCode);
+        LOG_INFO("Keeping configured fixed access code");
+    } else if (m_accessCodeRefreshIntervalMinutes == -1) {
         core::LocalConfigCenter::instance().setSavedAccessCode(accessCode);
         LOG_INFO("Saved access code for 'never refresh' mode: {}", accessCode.toStdString());
     } else if (m_accessCodeRefreshIntervalMinutes > 0) {
@@ -974,6 +1069,14 @@ QString MainController::getDefaultServerUrl() const
 
 void MainController::onAccessCodeRefreshTimer()
 {
+    // Defensive: even if the interval setting was changed externally, never
+    // rotate a user-chosen fixed code.
+    if (!core::LocalConfigCenter::instance().customAccessCode().isEmpty()) {
+        LOG_INFO("Custom fixed access code active, skipping auto-refresh");
+        m_accessCodeRefreshTimer.stop();
+        return;
+    }
+
     LOG_INFO("Access code auto-refresh timer triggered");
     
     // Check if host is still connected

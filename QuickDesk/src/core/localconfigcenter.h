@@ -35,6 +35,7 @@ public:
 
     LCC_FUNCTION_DEC_STRING(language, Language, "Auto")
     LCC_FUNCTION_DEC_STRING(savedAccessCode, SavedAccessCode, "")  // Saved access code for "never refresh" mode
+    LCC_FUNCTION_DEC_STRING(customAccessCode, CustomAccessCode, "")  // User-chosen fixed access code (6 digits); empty = random code
     LCC_FUNCTION_DEC_STRING(preferredVideoCodec, PreferredVideoCodec, "AV1")  // Video codec: "H264", "VP8", "VP9", "AV1"
     LCC_FUNCTION_DEC_STRING(accessCodeNextRefreshTime, AccessCodeNextRefreshTime, "")  // ISO datetime of next scheduled refresh
     LCC_FUNCTION_DEC_STRING(signalingServerUrl, SignalingServerUrl, "wss://qdsignaling.quickcoder.cc") // Signaling server URL

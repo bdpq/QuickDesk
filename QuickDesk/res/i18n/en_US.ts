@@ -1855,6 +1855,42 @@ Frame rate: %3 fps</translation>
         <source>Skills directory added. Skill host will reload.</source>
         <translation>Skills directory added. Skill host will reload.</translation>
     </message>
+    <message>
+        <source>Custom Fixed Access Code</source>
+        <translation>Custom Fixed Access Code</translation>
+    </message>
+    <message>
+        <source>Set your own 6-digit access code. It stays the same across restarts and disables auto-refresh. Use only on trusted networks.</source>
+        <translation>Set your own 6-digit access code. It stays the same across restarts and disables auto-refresh. Use only on trusted networks.</translation>
+    </message>
+    <message>
+        <source>6 digits</source>
+        <translation>6 digits</translation>
+    </message>
+    <message>
+        <source>Apply</source>
+        <translation>Apply</translation>
+    </message>
+    <message>
+        <source>Access code must be exactly 6 digits</source>
+        <translation>Access code must be exactly 6 digits</translation>
+    </message>
+    <message>
+        <source>Code saved. Restart QuickDesk to apply it.</source>
+        <translation>Code saved. Restart QuickDesk to apply it.</translation>
+    </message>
+    <message>
+        <source>Fixed code saved. Reconnecting host; if the displayed code does not change, restart QuickDesk.</source>
+        <translation>Fixed code saved. Reconnecting host; if the displayed code does not change, restart QuickDesk.</translation>
+    </message>
+    <message>
+        <source>Fixed code cleared. A random code will be generated.</source>
+        <translation>Fixed code cleared. A random code will be generated.</translation>
+    </message>
+    <message>
+        <source>Configured: %1  |  Host reports: %2</source>
+        <translation>Configured: %1  |  Host reports: %2</translation>
+    </message>
 </context>
 <context>
     <name>TrustConfirmationDialog</name>
