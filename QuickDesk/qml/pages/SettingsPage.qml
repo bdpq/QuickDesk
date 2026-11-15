@@ -206,6 +206,16 @@ Item {
                             }
                         }
 
+                        // Applying a fixed code pins the interval to "never" in C++;
+                        // keep the combo in sync and disabled while it is active.
+                        Connections {
+                            target: configViewModel
+                            function onAccessCodeRefreshIntervalChanged() {
+                                accessCodeRefreshCombo.currentIndex =
+                                        accessCodeRefreshCombo.indexOfValue(configViewModel.accessCodeRefreshInterval)
+                            }
+                        }
+
                         // Custom fixed access code
                         Column {
                             width: parent.width
@@ -284,10 +294,7 @@ Item {
 
                             Text {
                                 visible: configViewModel.customAccessCode.length > 0
-                                text: qsTr("Configured: %1  |  Host reports: %2")
-                                        .arg(configViewModel.customAccessCode)
-                                        .arg(root.mainController && root.mainController.accessCode
-                                             ? root.mainController.accessCode : "-")
+                                text: qsTr("Configured: %1  |  Host reports: %2").arg(configViewModel.customAccessCode).arg(root.mainController && root.mainController.accessCode ? root.mainController.accessCode : "-")
                                 font.pixelSize: Theme.fontSizeSmall
                                 color: Theme.textSecondary
                                 wrapMode: Text.WordWrap
