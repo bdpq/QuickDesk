@@ -1,4 +1,6 @@
-; QuickDesk Inno Setup Script
+﻿; QuickDesk Inno Setup Script
+; NOTE: keep this file saved as UTF-8 WITH BOM; Inno Setup needs the BOM to
+;       parse the Chinese strings in [Code] as UTF-8 on non-Chinese builders.
 ; Version placeholders are replaced by package_qd_win.bat before compilation
 
 #define MyAppName "QuickDesk"
@@ -91,51 +93,77 @@ begin
     Result := 'By clicking "Next", you acknowledge that you have read and agree to the following:';
 end;
 
-function GetDisclaimerBody: String;
+// CreateOutputMsgMemoPage's AMsg parameter is an AnsiString. Passing a Unicode
+// String with Chinese text through it makes the memo show mojibake (UTF-8 bytes
+// interpreted as the local ANSI code page), while the Unicode captions stay fine.
+// Create the page with an empty AMsg and fill the memo via its Lines property
+// (TStrings = Unicode) instead.
+procedure FillDisclaimerLines;
 begin
-  if ActiveLanguage = 'chinesesimplified' then
-    Result :=
-      '免责声明'#13#10 +
-      '========'#13#10#13#10 +
-      '1. 本软件是一款远程桌面工具，仅供合法用途使用，'#13#10 +
-      '   包括但不限于远程技术支持、远程办公和个人设备管理。'#13#10#13#10 +
-      '2. 在发起远程连接之前，您必须获得设备所有者的明确授权。'#13#10 +
-      '   未经授权访问计算机系统可能违反相关法律法规。'#13#10#13#10 +
-      '3. 开发者不对本软件的任何滥用行为承担任何责任，'#13#10 +
-      '   包括但不限于未经授权的访问、数据窃取、隐私侵犯'#13#10 +
-      '   或使用本软件进行的任何违法活动。'#13#10#13#10 +
-      '4. 您同意在使用本软件时遵守所有适用的地方、国家'#13#10 +
-      '   和国际法律法规。'#13#10#13#10 +
-      '5. 本软件按"原样"提供，不提供任何明示或暗示的保证。'#13#10 +
-      '   使用风险由您自行承担。'#13#10#13#10 +
-      '6. 继续安装即表示您已阅读、理解并同意本免责声明。'
-  else
-    Result :=
-      'DISCLAIMER'#13#10 +
-      '=========='#13#10#13#10 +
-      '1. This software is a remote desktop tool designed for lawful purposes only, '#13#10 +
-      '   including but not limited to remote technical support, remote work, and '#13#10 +
-      '   personal device management.'#13#10#13#10 +
-      '2. You must obtain explicit authorization from the owner of any device before '#13#10 +
-      '   initiating a remote connection. Unauthorized access to computer systems '#13#10 +
-      '   may violate applicable laws and regulations.'#13#10#13#10 +
-      '3. The developer assumes no responsibility or liability for any misuse of '#13#10 +
-      '   this software, including but not limited to unauthorized access, data '#13#10 +
-      '   theft, privacy violations, or any illegal activities conducted using '#13#10 +
-      '   this software.'#13#10#13#10 +
-      '4. You agree to comply with all applicable local, national, and international '#13#10 +
-      '   laws and regulations when using this software.'#13#10#13#10 +
-      '5. This software is provided "AS IS" without warranty of any kind, express '#13#10 +
-      '   or implied. Use at your own risk.'#13#10#13#10 +
-      '6. By proceeding with the installation, you acknowledge that you have read, '#13#10 +
-      '   understood, and agreed to this disclaimer.';
+  with DisclaimerPage.RichEditViewer.Lines do
+  begin
+    Clear;
+    if ActiveLanguage = 'chinesesimplified' then
+    begin
+      Add('免责声明');
+      Add('========');
+      Add('');
+      Add('1. 本软件是一款远程桌面工具，仅供合法用途使用，');
+      Add('   包括但不限于远程技术支持、远程办公和个人设备管理。');
+      Add('');
+      Add('2. 在发起远程连接之前，您必须获得设备所有者的明确授权。');
+      Add('   未经授权访问计算机系统可能违反相关法律法规。');
+      Add('');
+      Add('3. 开发者不对本软件的任何滥用行为承担任何责任，');
+      Add('   包括但不限于未经授权的访问、数据窃取、隐私侵犯');
+      Add('   或使用本软件进行的任何违法活动。');
+      Add('');
+      Add('4. 您同意在使用本软件时遵守所有适用的地方、国家');
+      Add('   和国际法律法规。');
+      Add('');
+      Add('5. 本软件按"原样"提供，不提供任何明示或暗示的保证。');
+      Add('   使用风险由您自行承担。');
+      Add('');
+      Add('6. 继续安装即表示您已阅读、理解并同意本免责声明。');
+    end
+    else
+    begin
+      Add('DISCLAIMER');
+      Add('==========');
+      Add('');
+      Add('1. This software is a remote desktop tool designed for lawful purposes only,');
+      Add('   including but not limited to remote technical support, remote work, and');
+      Add('   personal device management.');
+      Add('');
+      Add('2. You must obtain explicit authorization from the owner of any device before');
+      Add('   initiating a remote connection. Unauthorized access to computer systems');
+      Add('   may violate applicable laws and regulations.');
+      Add('');
+      Add('3. The developer assumes no responsibility or liability for any misuse of');
+      Add('   this software, including but not limited to unauthorized access, data');
+      Add('   theft, privacy violations, or any illegal activities conducted using');
+      Add('   this software.');
+      Add('');
+      Add('4. You agree to comply with all applicable local, national, and international');
+      Add('   laws and regulations when using this software.');
+      Add('');
+      Add('5. This software is provided "AS IS" without warranty of any kind, express');
+      Add('   or implied. Use at your own risk.');
+      Add('');
+      Add('6. By proceeding with the installation, you acknowledge that you have read,');
+      Add('   understood, and agreed to this disclaimer.');
+    end;
+  end;
 end;
 
 procedure InitializeWizard;
 begin
   DisclaimerPage := CreateOutputMsgMemoPage(wpWelcome,
     GetDisclaimerTitle, GetDisclaimerDescription,
-    GetDisclaimerSubCaption, GetDisclaimerBody);
+    GetDisclaimerSubCaption, '');
+  // Plain-text memo: no RTF code page conversion at all.
+  DisclaimerPage.RichEditViewer.UseRichEdit := False;
+  FillDisclaimerLines;
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
