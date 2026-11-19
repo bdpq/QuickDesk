@@ -88,3 +88,7 @@ SignalingServer/.env
 
 # Local agent workspace (work logs, device-specific notes) - do not publish
 .workbuddy/
+
+# Local API credentials extracted from release builds - never publish
+*API*Key*.txt
+*api*key*.txt

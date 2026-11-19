@@ -10,8 +10,10 @@ class FakeFileChannel implements FileTransferChannel {
   @override
   bool isOpen = true;
   int bufferedAmount = 0;
+  Future<int>? bufferedGate;
   @override
-  Future<int> bufferedBytes() async => bufferedAmount;
+  Future<int> bufferedBytes() async =>
+      bufferedGate != null ? await bufferedGate! : bufferedAmount;
   @override
   void Function()? onOpen;
   @override
@@ -344,5 +346,59 @@ void main() {
     expect(FileTransferManager.sanitizeDownloadName('../a/b\\c'), '.._a_b_c');
     expect(FileTransferManager.sanitizeDownloadName('..'), 'download');
     expect(FileTransferManager.sanitizeDownloadName('payload.part'), 'download-payload.part');
+  });
+
+  test('transfer ids start at 1 and never repeat across reconnections',
+      () async {
+    final ids = <String>[];
+    for (var i = 0; i < 3; i++) {
+      // 每次连接都会新建一个 FileTransferManager，实例级计数会重新回到 0。
+      final channels = <FakeFileChannel>[];
+      final queue = manager(channels);
+      final file = await local('id-$i.txt');
+      ids.add(queue.enqueueUpload('id-$i.txt', file.path));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      queue.dispose();
+    }
+    for (final id in ids) {
+      expect(id, matches(RegExp(r'^filetransfer-[1-9][0-9]*$')));
+    }
+    expect(ids.toSet().length, ids.length,
+        reason: 'reusing an id makes the Chromium host reject the channel');
+  });
+
+  test('a hanging backpressure probe cannot stall the first data chunk',
+      () async {
+    // 复现 flutter_webrtc 的 getBufferedAmount() 原生调用不返回的情形：
+    // 旧实现会永久停在 "0 B 正在上传"，且没有任何错误提示。
+    final channel = FakeFileChannel()
+      ..bufferedGate = Completer<int>().future;
+    final queue = FileTransferManager.withChannelFactory((_) async => channel,
+        probeTimeout: const Duration(milliseconds: 15));
+    managers.add(queue);
+    final file = await local('probe-hang', 100);
+    queue.enqueueUpload('probe-hang', file.path);
+    await waitUntil(() => channel.sent.any((message) => field(message) == 2));
+    expect(queue.tasks.single.bytes, greaterThan(0));
+    expect(queue.tasks.single.trace.join(' '),
+        contains('first data chunk sent'));
+    await waitUntil(() => channel.sent.any((message) => field(message) == 3));
+    channel.reply(emptyField(4));
+    await waitUntil(
+        () => queue.tasks.single.status == FileTransferStatus.completed);
+  });
+
+  test('a hanging DataChannel send times out instead of stalling forever',
+      () async {
+    final channel = FakeFileChannel()..sendGate = Completer<void>().future;
+    final queue = FileTransferManager.withChannelFactory((_) async => channel,
+        sendTimeout: const Duration(milliseconds: 15));
+    managers.add(queue);
+    final file = await local('send-hang', 100);
+    queue.enqueueUpload('send-hang', file.path);
+    await waitUntil(
+        () => queue.tasks.single.status == FileTransferStatus.failed);
+    expect(queue.tasks.single.error, contains('DataChannel send timed out'));
+    expect(queue.tasks.single.error, contains('stage:'));
   });
 }

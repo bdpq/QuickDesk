@@ -12,6 +12,7 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 import '../api/signaling_api.dart';
 import '../core/rand_id.dart';
 import '../core/quality_settings.dart';
+import '../util/diag_log.dart';
 import 'auth/spake2.dart' as spake2;
 import 'auth/spake2_authenticator.dart';
 import 'datachannel_config.dart';
@@ -63,6 +64,50 @@ class ClientSession {
   );
 
   RTCDataChannel? _eventChannel;
+
+  /// 协商期预建的 filetransfer-N 通道池。
+  ///
+  /// flutter_webrtc 在 Android 上，会话进入 Stable 之后新建的 in-band
+  /// DataChannel 不会向对端发出 DCEP OPEN（Host 日志中完全收不到通道），
+  /// 通道会永远停在 connecting/open=false；而协商期创建的 event 通道能
+  /// 正常 OPEN。把文件传输通道提前到同一时机创建，等价于 RustDesk
+  /// 「连接建立时通道即存在、文件只是消息」的多路复用模型。
+  /// 每个会话预建的 filetransfer-N 通道数。通道在传输结束后会被 close 且
+  /// 不放回池，因此这个值就是单次会话可传输的文件数上限（用尽后重连即可
+  /// 重建池）。32 条 SID 占用 2..64，远低于 libwebrtc SCTP 默认流上限。
+  static const int kPrecreatedFileChannels = 32;
+  final List<RTCDataChannel> _precreatedFileChannels = [];
+
+  /// 从池中取一条已 OPEN 的通道；调用方接管其生命周期。
+  RTCDataChannel? takePrecreatedFileChannel() {
+    for (var i = 0; i < _precreatedFileChannels.length; i++) {
+      final ch = _precreatedFileChannels[i];
+      if (ch.state == RTCDataChannelState.RTCDataChannelOpen) {
+        _precreatedFileChannels.removeAt(i);
+        _log('take precreated file channel label=${ch.label} sid=${ch.id}');
+        return ch;
+      }
+    }
+    _log('precreated file channel pool has no open channel '
+        '(size=${_precreatedFileChannels.length})');
+    return null;
+  }
+
+  Future<void> _precreateFileTransferChannels() async {
+    if (_precreatedFileChannels.isNotEmpty || _pc == null) return;
+    for (var i = 1; i <= kPrecreatedFileChannels; i++) {
+      try {
+        final ch = await _pc!.createDataChannel(
+          'filetransfer-$i',
+          createRemotingDataChannelInit(),
+        );
+        _precreatedFileChannels.add(ch);
+        _log('precreated filetransfer-$i sid=${ch.id} state=${ch.state}');
+      } catch (e) {
+        _log('precreate filetransfer-$i failed: $e');
+      }
+    }
+  }
 
   // 消息串行处理队列（防止 async 处理交叉）
   late final SerialTaskQueue<String> _signalQueue = SerialTaskQueue(
@@ -485,6 +530,9 @@ class ClientSession {
               'sid=${_eventChannel!.id}',
             );
           }
+          // 与 event 同一时机预建文件传输通道池：Stable 之后再创建的
+          // in-band 通道在 flutter_webrtc Android 上无法发出 DCEP OPEN。
+          await _precreateFileTransferChannels();
         } else {
           await _pc!.setRemoteDescription(
             RTCSessionDescription(message.sdp!.sdp, sdpType),
@@ -526,6 +574,12 @@ class ClientSession {
   Future<void> _cleanup() async {
     _signalQueue.clear();
     _eventChannel = null;
+    for (final ch in _precreatedFileChannels) {
+      try {
+        await ch.close();
+      } catch (_) {}
+    }
+    _precreatedFileChannels.clear();
     if (_pc != null) {
       await _pc!.close();
       _pc = null;
@@ -542,8 +596,7 @@ class ClientSession {
   }
 
   void _log(String message) {
-    // ignore: avoid_print
-    print('[ClientSession] $message');
+    DiagLog.log('SESSION', message);
     _logCtrl.add(message);
   }
 

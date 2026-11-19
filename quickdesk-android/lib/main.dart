@@ -6,9 +6,11 @@ import 'controller/home_page.dart';
 import 'l10n/app_strings.dart';
 import 'l10n/locale_controller.dart';
 import 'theme/app_theme.dart';
+import 'util/diag_log.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await DiagLog.init();
   await _initializeWebRtc();
   await LocaleController.instance.load();
   runApp(const QuickDeskApp());

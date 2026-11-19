@@ -91,6 +91,13 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   FileTransferManager? _fileTransfer;
   String _hostCaps = '';
 
+  /// 与 WebClient `_sendInitialConfig()` / 定制 Chromium client 的 client_caps
+  /// 完全一致。缺少 `fileTransfer` 时 Host 会拒绝 client 创建的
+  /// filetransfer-* 通道。
+  static const String kClientCapabilities =
+      'sendAttentionSequenceAction lockWorkstationAction '
+      'fileTransfer privacyScreen virtualDisplay';
+
   bool _firstFrame = false;
   bool _audioMuted = false;
 
@@ -198,6 +205,10 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   }
 
   Future<void> _init() async {
+    // 能力声明交给 DataChannelHandler 托管：control 通道每次打开自动重发，
+    // 不依赖下面 onControlReady 订阅的时序（broadcast 流会丢弃迟到的监听）。
+    _session.dcHandler.setClientCapabilities(kClientCapabilities);
+
     await _renderer.initialize();
     if (!mounted) return;
     setState(() => _rendererReady = true);
@@ -274,10 +285,11 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       if (mounted) setState(() {});
     };
 
-    // control 通道就绪后发送初始配置（对照 remote-main.js _sendInitialConfig）
+    // control 通道就绪后发送其余初始配置。能力声明已由 _init 中的
+    // setClientCapabilities 托管，这里重复发送反而可能在通道刚打开时
+    // 与其它 control 帧竞争；需要补发时调用 resendClientCapabilities()。
     _subs.add(
       _session.dcHandler.onControlReady.listen((_) {
-        _session.dcHandler.sendCapabilities('');
         _session.setAudioMuted(_audioMuted);
       }),
     );
@@ -341,8 +353,18 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     }
     // 启用剪贴板同步
     _clipboard ??= ClipboardSync(_session.dcHandler)..enable();
-    // 文件传输管理器
-    _fileTransfer ??= FileTransferManager(() => _session.peerConnection!);
+    // 文件传输管理器。优先复用协商期预建的通道池：flutter_webrtc 在
+    // Android 上，会话 Stable 之后新建的 in-band DataChannel 发不出 DCEP
+    // OPEN，通道会永远停在 open=false。池耗尽才回退到动态创建。
+    // 不再请求 SDP 重协商：Host 日志证实它会触发 ICE restart 并破坏
+    // SCTP 数据面，浏览器 WebClient 也从不发该请求。
+    _fileTransfer ??= FileTransferManager(
+      () => _session.peerConnection!,
+      takePooledChannel: () async {
+        final ch = _session.takePrecreatedFileChannel();
+        return ch == null ? null : wrapRtcDataChannel(ch);
+      },
+    );
   }
 
   bool get _supportsFileTransfer => _hostCaps.contains('fileTransfer');
@@ -352,6 +374,9 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   Future<void> _pickAndUpload() async {
     final manager = _fileTransfer;
     if (manager == null || _state != SessionState.connected) return;
+    // 兜底：首次声明若因 control 未就绪而漏发，这里补上；已成功发出后
+    // 是空操作 —— Host 只处理第一次 Capabilities，重复发送只会被忽略。
+    _session.dcHandler.resendClientCapabilities();
     try {
       final result = await FilePicker.platform.pickFiles(
         withData: false, allowMultiple: true,
@@ -382,6 +407,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   Future<void> _startDownload() async {
     final manager = _fileTransfer;
     if (manager == null || _state != SessionState.connected) return;
+    _session.dcHandler.resendClientCapabilities(); // 同上，幂等兜底
     try {
       final dir = await _downloadDir();
       if (!mounted || manager != _fileTransfer ||
@@ -421,7 +447,10 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      builder: (ctx) => TransferSheet(manager: manager),
+      builder: (ctx) => TransferSheet(
+        manager: manager,
+        hostCapabilities: _hostCaps,
+      ),
     ).whenComplete(() => _transferSheetOpen = false);
   }
 

@@ -146,10 +146,37 @@ Uint8List encodeVideoLayout(VideoLayoutMsg layout) => concatBytes([
 ]);
 
 /// ControlMessage 包装（internal.proto 字段号对照 JS 版本）
+/// PeerConnectionParameters (control.proto, ControlMessage 字段 14)：
+///   preferred_min_bitrate_bps = 1
+///   preferred_max_bitrate_bps = 2
+///   request_ice_restart       = 3
+///   request_sdp_restart       = 4
+///
+/// `request_sdp_restart` 让 Host 主动发起一轮新的 SDP offer/answer 交换
+/// （不重启 ICE）。Chromium 客户端在新建 DataChannel 后依赖浏览器内部的
+/// `onnegotiationneeded` 隐式触发；flutter_webrtc 没有这套机制，必须显式
+/// 请求，否则新建的 filetransfer-N 通道永远停在 connecting/open=false。
+Uint8List encodePeerConnectionParameters({
+  int? preferredMinBitrateBps,
+  int? preferredMaxBitrateBps,
+  bool? requestIceRestart,
+  bool? requestSdpRestart,
+}) => concatBytes([
+  if (preferredMinBitrateBps != null)
+    varintField(1, preferredMinBitrateBps),
+  if (preferredMaxBitrateBps != null)
+    varintField(2, preferredMaxBitrateBps),
+  if (requestIceRestart != null) varintField(3, requestIceRestart),
+  if (requestSdpRestart != null) varintField(4, requestSdpRestart),
+]);
+
 Uint8List encodeControlMessage({
   ClipboardEventMsg? clipboardEvent,
   int? targetFramerate,
   int? preferredMinBitrateBps,
+  int? preferredMaxBitrateBps,
+  bool? requestIceRestart,
+  bool? requestSdpRestart,
   ClientResolutionMsg? clientResolution,
   bool? audioControlEnable,
   String? capabilities,
@@ -164,8 +191,21 @@ Uint8List encodeControlMessage({
       3,
       concatBytes([varintField(1, true), varintField(5, targetFramerate)]),
     ),
-  if (preferredMinBitrateBps != null)
-    lengthDelimitedField(14, varintField(1, preferredMinBitrateBps)),
+  // 字段 14 = PeerConnectionParameters。把可能的多个子字段合并进同一个
+  // 嵌套消息，避免重复出现字段 14（protobuf 允许但部分实现只取最后一个）。
+  if (preferredMinBitrateBps != null ||
+      preferredMaxBitrateBps != null ||
+      requestIceRestart != null ||
+      requestSdpRestart != null)
+    lengthDelimitedField(
+      14,
+      encodePeerConnectionParameters(
+        preferredMinBitrateBps: preferredMinBitrateBps,
+        preferredMaxBitrateBps: preferredMaxBitrateBps,
+        requestIceRestart: requestIceRestart,
+        requestSdpRestart: requestSdpRestart,
+      ),
+    ),
   if (audioControlEnable != null)
     lengthDelimitedField(5, varintField(1, audioControlEnable)),
   if (capabilities != null)

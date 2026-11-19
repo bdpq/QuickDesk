@@ -22,11 +22,19 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
+import '../util/diag_log.dart';
 import 'datachannel_config.dart';
 import 'proto/wire.dart';
 
 const int _chunkSize = 8192;
 const int _bufferHighWater = _chunkSize * 8;
+
+/// 与 WebClient 的模块级 nextFileTransferId 对齐：ID 从 1 开始，且跨会话
+/// 单调递增。Chromium Host 以 label 中的 ID 建立/索引传输会话，0 或重复 ID
+/// 会命中已结束（或非法）的传输，通道随即被对端关闭，进度永远停在 0 字节。
+/// 因此计数器必须是文件级全局，而不是 FileTransferManager 的实例字段——
+/// 断开重连会重建 manager，实例级计数会重新从 0 开始。
+int _nextTransferId = 1;
 
 // ==================== 编码 ====================
 
@@ -140,33 +148,53 @@ abstract class FileTransferChannel {
   Future<void> close();
 }
 
-class _RtcFileTransferChannel implements FileTransferChannel {
+/// 把一条已存在的 [RTCDataChannel] 包装成文件传输通道。
+///
+/// 供预建通道池使用：会话协商期创建好的通道在真正发起传输时直接复用，
+/// 避免在 Stable 之后动态 createDataChannel。
+FileTransferChannel wrapRtcDataChannel(RTCDataChannel channel) =>
+    RtcFileTransferChannel(channel);
+
+class RtcFileTransferChannel implements FileTransferChannel {
   final RTCDataChannel channel;
   void Function()? _open;
   void Function(Uint8List)? _data;
   void Function()? _closed;
 
-  _RtcFileTransferChannel(this.channel) {
+  RtcFileTransferChannel(this.channel) {
+    DiagLog.log('FT.CH',
+        'construct label=${channel.label} id=${channel.id} state=${channel.state}');
     channel.onDataChannelState = (state) {
-      if (state == RTCDataChannelState.RTCDataChannelOpen) _open?.call();
+      DiagLog.log('FT.CH',
+          'state label=${channel.label} id=${channel.id} -> $state ready=$_hasOpened');
+      if (state == RTCDataChannelState.RTCDataChannelOpen) {
+        _hasOpened = true;
+        _open?.call();
+      }
       if (state == RTCDataChannelState.RTCDataChannelClosed) _closed?.call();
     };
     channel.onMessage = (message) {
+      DiagLog.log('FT.CH',
+          'message label=${channel.label} binary=${message.isBinary} '
+          'len=${message.binary.length}');
       if (message.isBinary) _data?.call(message.binary);
     };
   }
+
+  bool _hasOpened = false;
 
   @override
   bool get isOpen => channel.state == RTCDataChannelState.RTCDataChannelOpen;
   @override
   Future<int> bufferedBytes() async {
-    try {
-      return await channel.getBufferedAmount();
-    } on UnimplementedError {
-      final amount = channel.bufferedAmount;
-      if (amount == null) throw StateError('Buffered amount is unavailable');
-      return amount;
-    }
+    // flutter_webrtc 1.6.3 的 getBufferedAmount() 会经 MethodChannel 调用原生
+    // `dataChannelGetBufferedAmount`。在 Android 上该调用可能永不返回：上传
+    // 循环会在「发完 metadata、检查第一个背压」处永久挂起，而 task.bytes
+    // 只在首个数据块写出后才累加，界面就永远停在「0 B 正在上传」，且
+    // openTimer 已被 startOpen() 取消，不会有任何错误提示。
+    // 这里只读 Dart 侧由 dataChannelBufferedAmountChange 事件维护的缓存值，
+    // 完全同步、不可能挂起；缓存缺失时退化为 0（靠 SCTP 自身背压）。
+    return channel.bufferedAmount ?? 0;
   }
   @override
   set onOpen(void Function()? callback) => _open = callback;
@@ -194,6 +222,10 @@ class FileTransferTask {
   String? error;
   String? savedPath;
 
+  /// 关键链路阶段记录，供传输队列直接显示。用于区分「通道没打开」、
+  /// 「背压检查挂起」、「metadata 已发但无响应」等 0 字节故障。
+  final List<String> trace = [];
+
   FileTransferTask(this.id, this.filename, this.source, {this.download = false});
 
   bool get finished =>
@@ -206,21 +238,64 @@ class FileTransferTask {
 
 class FileTransferManager extends ChangeNotifier {
   final Future<FileTransferChannel> Function(String) _createChannel;
+
+  /// 仅由 [FileTransferManager.new] 设置，用于在 Trace 中记录创建通道瞬间的
+  /// PeerConnection 状态（signalingState / iceConnectionState），定位
+  /// 「通道 open=false」究竟是 SCTP 未就绪还是 DCEP 协商卡住。
+  /// 使用 [withChannelFactory] 的单元测试里为 null，不影响既有行为。
+  RTCPeerConnection Function()? _pcProvider;
+
+  /// 【已停用】历史上用于请求 Host 做 SDP 重协商。Host 日志证实该请求会
+  /// 触发 ICE restart 并破坏 SCTP 数据面，现已无调用者，仅保留以兼容测试。
+  final void Function()? onChannelCreated;
+
+  /// 从会话协商期预建的通道池里取一条已 OPEN 的通道。
+  ///
+  /// flutter_webrtc 在 Android 上，会话进入 Stable 之后新建的 in-band
+  /// DataChannel 发不出 DCEP OPEN（Host 端完全收不到），通道会永远停在
+  /// open=false。因此优先复用协商期创建的通道，仅当池耗尽时才回退到动态
+  /// 创建。返回 null 表示池中没有可用通道。
+  final Future<FileTransferChannel?> Function()? takePooledChannel;
+
   final Duration idleTimeout;
+
+  /// 背压探测与单帧发送的 watchdog 时限。可注入以便单元测试覆盖
+  /// flutter_webrtc 原生 MethodChannel 不返回时的挂起路径。
+  final Duration probeTimeout;
+  final Duration sendTimeout;
   final List<FileTransferTask> _tasks = [];
   final Map<String, void Function()> _cancelHooks = {};
-  int _seq = 0;
   bool _disposed = false;
   bool _running = false;
   final _progressClock = Stopwatch()..start();
 
-  FileTransferManager(RTCPeerConnection Function() pcProvider)
-      : this.withChannelFactory((label) async => _RtcFileTransferChannel(
-            await pcProvider().createDataChannel(
-                label, createRemotingDataChannelInit())));
+  FileTransferManager(RTCPeerConnection Function() pcProvider,
+      {void Function()? onChannelCreated,
+      Future<FileTransferChannel?> Function()? takePooledChannel})
+      : this.withChannelFactory((label) async {
+          final pc = pcProvider();
+          DiagLog.log('FT.FACTORY',
+              'createDataChannel label=$label '
+              'pcSignaling=${await pc.getSignalingState()} '
+              'iceState=${await pc.getIceConnectionState()}');
+          final ch = await pc.createDataChannel(
+              label, createRemotingDataChannelInit());
+          DiagLog.log('FT.FACTORY',
+              'created label=$label id=${ch.id} state=${ch.state}');
+          return RtcFileTransferChannel(ch);
+        },
+            pcProvider: pcProvider,
+            onChannelCreated: onChannelCreated,
+            takePooledChannel: takePooledChannel);
 
   FileTransferManager.withChannelFactory(this._createChannel,
-      {this.idleTimeout = const Duration(seconds: 60)});
+      {this.idleTimeout = const Duration(seconds: 60),
+      this.probeTimeout = const Duration(seconds: 5),
+      this.sendTimeout = const Duration(seconds: 10),
+      RTCPeerConnection Function()? pcProvider,
+      this.onChannelCreated,
+      this.takePooledChannel})
+      : _pcProvider = pcProvider;
 
   List<FileTransferTask> get tasks => List.unmodifiable(_tasks);
 
@@ -246,8 +321,8 @@ class FileTransferManager extends ChangeNotifier {
     if (_tasks.where((task) => !task.finished).length >= 256) {
       throw StateError('The transfer queue is full');
     }
-    final task = FileTransferTask('filetransfer-${_seq++}', filename, source,
-        download: download);
+    final task = FileTransferTask('filetransfer-${_nextTransferId++}', filename,
+        source, download: download);
     _tasks.add(task);
     _changed();
     _pump();
@@ -301,6 +376,10 @@ class FileTransferManager extends ChangeNotifier {
     Future<void>? outbound;
     var pendingInboundBytes = 0;
     Timer? timer;
+    Timer? openTimer;
+    Timer? watchdog;
+    final clock = Stopwatch()..start();
+    String stage = 'queue';
     String? failure;
     bool ended = false;
     bool opened = false;
@@ -308,11 +387,20 @@ class FileTransferManager extends ChangeNotifier {
     bool sentEnd = false;
     bool succeeded = false;
 
+    void mark(String value) {
+      stage = value;
+      task.trace.add('${clock.elapsedMilliseconds}ms $value');
+      if (task.trace.length > 24) task.trace.removeAt(0);
+      DiagLog.log('FT.RUN', '${task.id} ${clock.elapsedMilliseconds}ms $value');
+      _changed();
+    }
+
     void stop([Object? error]) {
       if (ended) return;
       ended = true;
       if (error != null) {
-        failure = '$error';
+        failure = '$error (stage: $stage)';
+        mark('stopped');
         if (!task.finished) {
           task.status = FileTransferStatus.failed;
           task.error = failure;
@@ -320,6 +408,8 @@ class FileTransferManager extends ChangeNotifier {
         }
       }
       timer?.cancel();
+      openTimer?.cancel();
+      watchdog?.cancel();
       finished.complete();
     }
 
@@ -333,6 +423,7 @@ class FileTransferManager extends ChangeNotifier {
 
     _cancelHooks[task.id] = () => stop();
     touch();
+    mark('reading source');
     try {
       if (!task.download) {
         if (await FileSystemEntity.type(task.source, followLinks: true) !=
@@ -344,7 +435,31 @@ class FileTransferManager extends ChangeNotifier {
         task.totalBytes = await openedInput.length();
       }
       if (getStopped()) return;
-      final creation = _createChannel(task.id).then<FileTransferChannel?>((created) async {
+      mark('creating channel');
+      // 记录创建通道瞬间的 PeerConnection 状态，用于区分：
+      // signaling 非 stable（重协商未收敛）/ ICE 未 connected（链路未就绪）
+      // 这两种都会让新 DataChannel 永远停在 connecting(open=false)。
+      final pc = _pcProvider?.call();
+      if (pc != null) {
+        try {
+          final sig = await pc.getSignalingState();
+          final ice = await pc.getIceConnectionState();
+          mark('pc signaling=$sig ice=$ice');
+        } catch (e) {
+          mark('pc state query failed: $e');
+        }
+      }
+      Future<FileTransferChannel> openChannel() async {
+        final pooled = await takePooledChannel?.call();
+        if (pooled != null) {
+          mark('using pooled channel (open=${pooled.isOpen})');
+          return pooled;
+        }
+        mark('pool empty; creating channel dynamically');
+        return _createChannel(task.id);
+      }
+
+      final creation = openChannel().then<FileTransferChannel?>((created) async {
         if (getStopped()) {
           try { await created.close(); } catch (_) {}
           return null;
@@ -356,26 +471,45 @@ class FileTransferManager extends ChangeNotifier {
         finished.future.then((_) => null),
       ]);
       if (channel == null || getStopped()) return;
+      mark('channel created (open=${channel.isOpen})');
+      // filetransfer-N 是 in-band DCEP 通道，在既有 SCTP 关联上创建后会
+      // 自动 OPEN，不请求 SDP 重协商。Host 端 quickdesk-remoting 的日志证实
+      // request_sdp_restart 会触发 ICE restart 并销毁 SCTP 通道，是通道
+      // 停在 open=false 的真正原因。浏览器 WebClient 同样从不发此请求。
       final transport = channel;
+      // send() 走 flutter_webrtc 的 MethodChannel。原生实现若不回 result，
+      // Future 会永久挂起；加超时让故障可见，而不是永远显示「正在上传 0 B」。
       Future<void> send(Uint8List data) => Future.any<void>([
-        transport.send(data),
+        transport.send(data).timeout(
+          sendTimeout,
+          onTimeout: () => throw StateError('DataChannel send timed out'),
+        ),
         finished.future,
       ]);
 
       Future<void> onOpen() async {
         if (opened || getStopped()) return;
         opened = true;
+        mark('channel open');
         try {
           if (task.download) {
             await send(_encRequestTransfer());
+            mark('request_transfer sent');
             touch();
             return;
           }
+          mark('sending metadata');
           await send(_encMetadata(task.filename, task.totalBytes));
+          mark('metadata sent');
           while (task.bytes < task.totalBytes && !getStopped()) {
+            mark('checking backpressure');
             while (!getStopped() &&
                 await Future.any<int>([
-                  transport.bufferedBytes(), finished.future.then((_) => 0),
+                  transport.bufferedBytes().timeout(
+                    probeTimeout,
+                    onTimeout: () => 0,
+                  ),
+                  finished.future.then((_) => 0),
                 ]) > _bufferHighWater) {
               await Future<void>.delayed(const Duration(milliseconds: 20));
             }
@@ -387,6 +521,7 @@ class FileTransferManager extends ChangeNotifier {
             if (chunk.isEmpty) throw StateError('The local file changed during upload');
             await send(_encData(chunk));
             if (getStopped()) return;
+            if (task.bytes == 0) mark('first data chunk sent');
             task.bytes += chunk.length;
             touch();
             _progressChanged();
@@ -395,6 +530,7 @@ class FileTransferManager extends ChangeNotifier {
             sentEnd = true;
             _changed();
             await send(_encEnd());
+            mark('end sent; awaiting success');
             touch();
           }
         } catch (error) {
@@ -407,11 +543,13 @@ class FileTransferManager extends ChangeNotifier {
         final message = _decode(bytes);
         touch();
         if (message.errorType != null) {
+          mark('host error frame');
           stop('Host error ${message.errorType}');
           return;
         }
         if (!task.download) {
           if (message.success && sentEnd) {
+            mark('success received');
             succeeded = true;
             stop();
           }
@@ -469,6 +607,7 @@ class FileTransferManager extends ChangeNotifier {
 
       void startOpen() {
         if (opened || getStopped()) return;
+        openTimer?.cancel();
         outbound = onOpen();
         unawaited(outbound);
       }
@@ -490,7 +629,29 @@ class FileTransferManager extends ChangeNotifier {
           pendingInboundBytes -= data.length;
         });
       };
-      if (transport.isOpen) startOpen();
+      if (transport.isOpen) {
+        startOpen();
+      } else {
+        // 覆盖「open 回调在绑定前触发、state getter 滞后」的竞态。
+        unawaited(Future<void>.delayed(const Duration(seconds: 1), () {
+          if (!opened && !getStopped() && transport.isOpen) startOpen();
+        }));
+      }
+      // 无论通道是否报告 open，watchdog 都启用：open 之后发送链路仍可能
+      // 卡在背压检查或 send 上，而 openTimer 已被 startOpen() 取消。
+      watchdog = Timer.periodic(const Duration(seconds: 5), (_) {
+        if (getStopped()) {
+          watchdog?.cancel();
+          return;
+        }
+        if (!opened && clock.elapsed >= const Duration(seconds: 15)) {
+          stop('File transfer channel did not open within 15s; '
+              'the remote host may have rejected this transfer');
+        } else if (opened && !task.download && task.bytes == 0 &&
+            clock.elapsed >= const Duration(seconds: 20)) {
+          stop('No data sent within 20s after the channel opened');
+        }
+      });
       await finished.future;
     } catch (error) {
       failure = '$error';
@@ -498,6 +659,8 @@ class FileTransferManager extends ChangeNotifier {
     } finally {
       ended = true;
       timer?.cancel();
+      openTimer?.cancel();
+      watchdog?.cancel();
       _cancelHooks.remove(task.id);
       if (channel != null) {
         channel.onOpen = null;

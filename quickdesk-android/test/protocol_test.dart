@@ -7,6 +7,7 @@ import 'package:quickdesk_android/protocol/auth/spake2.dart';
 import 'package:quickdesk_android/protocol/auth/spake2_authenticator.dart';
 import 'package:quickdesk_android/protocol/datachannel_config.dart';
 import 'package:quickdesk_android/protocol/proto/protobuf_messages.dart';
+import 'package:quickdesk_android/protocol/proto/wire.dart';
 import 'package:quickdesk_android/protocol/signaling/jingle.dart';
 import 'package:quickdesk_android/protocol/signaling/sdp_signature.dart';
 
@@ -318,6 +319,64 @@ void main() {
       expect(String.fromCharCodes(decoded.clipboardEvent!.data), 'hello');
       expect(decoded.capabilities, 'fileTransfer privacyScreen');
       expect(decoded.audioControlEnable, isTrue);
+    });
+
+    test('PeerConnectionParameters: requestSdpRestart is field 14 -> field 4', () {
+      // control.proto: ControlMessage.peer_connection_parameters = 14,
+      // PeerConnectionParameters.request_sdp_restart = 4.
+      final encoded = encodeControlMessage(requestSdpRestart: true);
+      final top = ProtobufReader(encoded);
+      final tag = top.readTag();
+      expect(tag.fieldNumber, 14);
+      expect(tag.wireType, 2);
+      final inner = ProtobufReader(top.readBytes());
+      final innerTag = inner.readTag();
+      expect(innerTag.fieldNumber, 4);
+      expect(innerTag.wireType, 0);
+      expect(inner.readVarint(), 1);
+    });
+
+    test('PeerConnectionParameters: min bitrate still field 14 -> field 1', () {
+      final encoded = encodeControlMessage(preferredMinBitrateBps: 500000);
+      final top = ProtobufReader(encoded);
+      final tag = top.readTag();
+      expect(tag.fieldNumber, 14);
+      final inner = ProtobufReader(top.readBytes());
+      expect(inner.readTag().fieldNumber, 1);
+      expect(inner.readVarint(), 500000);
+    });
+
+    test('PeerConnectionParameters: multiple params share one field 14', () {
+      final encoded = encodeControlMessage(
+        preferredMinBitrateBps: 500000,
+        requestSdpRestart: true,
+      );
+      final top = ProtobufReader(encoded);
+      int count14 = 0;
+      Uint8List? payload;
+      while (top.hasMore) {
+        final tag = top.readTag();
+        if (tag.fieldNumber == 14) {
+          count14++;
+          payload = top.readBytes();
+        } else {
+          top.skipField(tag.wireType);
+        }
+      }
+      expect(count14, 1);
+      final inner = ProtobufReader(payload!);
+      final fields = <int>[];
+      while (inner.hasMore) {
+        final t = inner.readTag();
+        fields.add(t.fieldNumber);
+        if (t.wireType == 0) {
+          inner.readVarint();
+        } else {
+          inner.skipField(t.wireType);
+        }
+      }
+      expect(fields, contains(1));
+      expect(fields, contains(4));
     });
 
     test('VideoLayout roundtrip', () {

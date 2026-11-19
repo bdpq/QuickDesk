@@ -9,7 +9,15 @@ import '../../protocol/file_transfer.dart';
 class TransferSheet extends StatelessWidget {
   final FileTransferManager manager;
 
-  const TransferSheet({super.key, required this.manager});
+  /// 被控端通过 control 通道下发的 capabilities。用于排查「通道被拒绝」时
+  /// 区分是对端不支持、还是本端声明/通道 ID 没被接受。
+  final String hostCapabilities;
+
+  const TransferSheet({
+    super.key,
+    required this.manager,
+    this.hostCapabilities = '',
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -26,6 +34,13 @@ class TransferSheet extends StatelessWidget {
                   tooltip: L10n.t('common.back'),
                   onPressed: () => Navigator.of(context).pop(),
                   icon: const Icon(Icons.close),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+                child: Text(
+                  'Host caps: ${hostCapabilities.isEmpty ? '(none)' : hostCapabilities}',
+                  style: Theme.of(context).textTheme.bodySmall,
                 ),
               ),
               Expanded(
@@ -55,6 +70,11 @@ class TransferSheet extends StatelessWidget {
                             ),
                           Text('${task.bytes} / ${task.totalBytes} B'),
                           if (task.error != null) Text(task.error!),
+                          if (task.trace.isNotEmpty)
+                            Text(
+                              'Trace: ${task.trace.join(' | ')}',
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
                           if (task.savedPath != null)
                             SelectableText(L10n.t('file.savedTo', {'path': task.savedPath})),
                         ],

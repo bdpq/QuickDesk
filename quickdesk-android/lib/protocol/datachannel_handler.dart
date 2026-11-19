@@ -15,6 +15,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
+import '../util/diag_log.dart';
 import 'proto/protobuf_messages.dart';
 
 class DataChannelHandler {
@@ -47,6 +48,17 @@ class DataChannelHandler {
   bool _controlReady = false;
   bool _eventReady = false;
   bool _disposed = false;
+
+  /// client 角色的能力声明。由 handler 自己持有，不依赖 UI 层订阅
+  /// [onControlReady] 的时序（broadcast 流会丢弃迟到的监听）。
+  ///
+  /// Chromium Host 的 `PeerSessionImpl::SetCapabilities` **只处理第一次**
+  /// 收到的 Capabilities，之后一律报 "has been received already" 并忽略；
+  /// 而 `filetransfer-` 通道 handler 正是在这一次调用里依据双方能力交集
+  /// 注册的。所以第一次必须带上完整的 `fileTransfer`，且整个会话只发一次
+  /// —— 补发既无效，还会在 Host 日志里留下告警。
+  String _clientCapabilities = '';
+  bool _capabilitiesSent = false;
 
   bool get controlReady => _controlReady;
   bool get eventReady => _eventReady;
@@ -105,12 +117,17 @@ class DataChannelHandler {
 
   void _handleControlState(RTCDataChannelState? channelState) {
     if (_disposed) return;
+    DiagLog.log('DC',
+        'control datachannel: $channelState (sid=${_controlChannel?.id})');
     onLog?.call(
       'control datachannel: $channelState (sid=${_controlChannel?.id})',
     );
     final wasReady = _controlReady;
     _controlReady = channelState == RTCDataChannelState.RTCDataChannelOpen;
     if (_controlReady && !wasReady) {
+      // 必须在通知监听者之前发送：此时 _controlReady 已置位，_sendControl
+      // 才会真正写出。若登记得晚（control 已打开），也会在这里补上。
+      _maybeSendClientCapabilities();
       onControlOpen?.call();
       _controlReadyCtrl.add(null);
     } else if (channelState == RTCDataChannelState.RTCDataChannelClosing ||
@@ -196,8 +213,45 @@ class DataChannelHandler {
     _sendControl(encodeControlMessage(capabilities: capabilities));
   }
 
+  /// 登记 client 角色的能力串。若 control 通道已就绪则立即发送，否则等
+  /// control 打开时由 [_handleControlState] 补上，不依赖 UI 订阅时序。
+  void setClientCapabilities(String capabilities) {
+    _clientCapabilities = capabilities;
+    _maybeSendClientCapabilities();
+  }
+
+  void _maybeSendClientCapabilities() {
+    if (_disposed || _capabilitiesSent || _clientCapabilities.isEmpty) return;
+    // 只有真正写出才算已发送：control 未就绪时 _sendControl 会静默丢弃，
+    // 此时必须保留重发机会，否则 Host 永远注册不了 filetransfer- handler。
+    if (!_controlReady || _controlChannel == null) return;
+    _sendControl(encodeControlMessage(capabilities: _clientCapabilities));
+    _capabilitiesSent = true;
+    DiagLog.log('DC', 'client capabilities sent: $_clientCapabilities');
+  }
+
+  /// 兼容发起传输前的兜底调用：同一个会话内 Host 只认第一次，因此
+  /// 已成功发出后不再重复发送，避免 "Capabilities has been received already"。
+  void resendClientCapabilities() => _maybeSendClientCapabilities();
+
   void sendAudioControl({required bool enable}) {
     _sendControl(encodeControlMessage(audioControlEnable: enable));
+  }
+
+  /// 【已停用，勿调用】请求 Host 发起 SDP 重协商。
+  ///
+  /// 历史原因：曾误以为 flutter_webrtc 需要显式重协商才能 OPEN 新建的
+  /// filetransfer-N 通道。Host 端 quickdesk-remoting 的实测日志推翻了该假设：
+  /// 此请求实际触发 ICE restart（ufrag 变化）、导致 candidate 全部失配，
+  /// 并销毁既有 SCTP 通道，正是文件传输通道 open=false 的根因。
+  /// 浏览器 WebClient 从不发送此消息。保留方法仅为协议测试与向后兼容。
+  void requestSdpRestart() {
+    if (!_controlReady || _controlChannel == null) {
+      onLog?.call('requestSdpRestart dropped: control channel not ready');
+      return;
+    }
+    onLog?.call('requestSdpRestart: sending to host');
+    _sendControl(encodeControlMessage(requestSdpRestart: true));
   }
 
   void sendTargetFramerate(int fps) {

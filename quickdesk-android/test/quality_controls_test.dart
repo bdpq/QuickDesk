@@ -13,6 +13,7 @@ import 'package:quickdesk_android/protocol/proto/protobuf_messages.dart';
 
 class FakeControlChannel implements RTCDataChannel {
   final List<Uint8List> sent = [];
+  void Function(RTCDataChannelState)? stateCallback;
   @override
   String get label => 'control';
   @override
@@ -20,7 +21,9 @@ class FakeControlChannel implements RTCDataChannel {
   @override
   RTCDataChannelState get state => RTCDataChannelState.RTCDataChannelOpen;
   @override
-  set onDataChannelState(void Function(RTCDataChannelState)? callback) {}
+  set onDataChannelState(void Function(RTCDataChannelState)? callback) {
+    stateCallback = callback;
+  }
   @override
   set onMessage(void Function(RTCDataChannelMessage)? callback) {}
   @override
@@ -157,4 +160,33 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  test('client capabilities are sent exactly once, on control open', () async {
+    final handler = DataChannelHandler();
+    const caps = 'sendAttentionSequenceAction lockWorkstationAction '
+        'fileTransfer privacyScreen virtualDisplay';
+
+    // 通道接管之前就登记：不应写出任何帧，也不依赖 UI 订阅 onControlReady。
+    handler.setClientCapabilities(caps);
+    final channel = FakeControlChannel();
+    expect(channel.sent, isEmpty);
+
+    handler.handleDataChannel(channel);
+    expect(channel.sent.length, 1);
+    expect(decodeControlMessage(channel.sent.single).capabilities, caps);
+
+    // Chromium Host 的 SetCapabilities 只认第一次，重复补发必须是空操作，
+    // 否则 Host 会报 "Capabilities has been received already" 并忽略。
+    handler.resendClientCapabilities();
+    expect(channel.sent.length, 1);
+
+    // ICE 重启导致 control 通道重开也不重发：handler 未重建意味着会话未重建。
+    channel.stateCallback?.call(RTCDataChannelState.RTCDataChannelClosed);
+    channel.stateCallback?.call(RTCDataChannelState.RTCDataChannelOpen);
+    expect(channel.sent.length, 1);
+
+    await handler.dispose();
+    handler.resendClientCapabilities();
+    expect(channel.sent.length, 1);
+  });
 }
