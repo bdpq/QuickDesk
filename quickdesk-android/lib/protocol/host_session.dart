@@ -22,14 +22,18 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
+import '../util/diag_log.dart';
 import '../api/signaling_api.dart' show IceServerEntry;
 import 'auth/spake2_authenticator.dart';
 import 'datachannel_config.dart';
 import 'datachannel_handler.dart';
+import 'file_transfer.dart' show wrapRtcDataChannel;
+import 'host_file_transfer.dart';
 import 'host_input.dart';
 import 'peer/candidates.dart';
 import 'host_clients.dart';
@@ -75,8 +79,22 @@ class HostSession {
   /// 收到的客户端输入事件（鼠标/键盘/文本）回调 → 交注入层
   final void Function(HostInputEvent event)? onInput;
 
-  /// Host 声明的能力集（最小集：无文件传输/隐私屏）
+  /// Host 声明的能力集。必须包含 `fileTransfer`，桌面端 Chromium client
+  /// 才会把工具栏的上传/下载项置为可用，并在 Stable 之后动态创建
+  /// `filetransfer-N` 通道。
   final String capabilities;
+
+  /// 接收完成后的落盘/发布（把暂存文件搬到用户可访问的位置）。
+  final HostFilePublisher? publishReceivedFile;
+
+  /// 控制端请求下载时，在本机选择要发送的文件。
+  final HostFilePicker? pickOutgoingFile;
+
+  /// 传输结果通知（供被控页弹提示）。
+  final void Function(HostFileEvent event)? onFileEvent;
+
+  /// 接收暂存目录；默认应用临时目录，可由上层指定为 app cache。
+  final Directory? stagingRoot;
 
   HostSessionState state = HostSessionState.idle;
   String? failureReason;
@@ -131,6 +149,10 @@ class HostSession {
     this.iceServers = const [],
     this.onInput,
     this.capabilities = '',
+    this.publishReceivedFile,
+    this.pickOutgoingFile,
+    this.onFileEvent,
+    this.stagingRoot,
   });
 
   String get _hostJid => '$deviceId@quickdesk.local/$_hostResource';
@@ -248,6 +270,8 @@ class HostSession {
   void _log(String message) {
     // ignore: avoid_print
     print('[HostSession] $message');
+    // 部分 ROM 屏蔽 logcat，被控端链路必须同时写入 App 私有诊断日志。
+    DiagLog.log('HOST.SESSION', message);
     if (!_logCtrl.isClosed) _logCtrl.add(message);
   }
 
@@ -277,6 +301,25 @@ class _HostPeer implements HostClientConnection {
     onEventMessage: _dispatchInput,
     onLog: (m) => session._log('peer[$clientId] $m'),
   );
+
+  /// 每个客户端一套独立的 Host 文件传输会话。只有声明了 fileTransfer 能力
+  /// 且上层提供了落盘/选文件实现时才启用；否则入站通道会被直接关闭，避免
+  /// 控制端在 0 字节处一直等待 success。
+  late final HostFileTransferManager? _files = () {
+    if (!session.capabilities.split(' ').contains('fileTransfer')) return null;
+    final publish = session.publishReceivedFile;
+    final pick = session.pickOutgoingFile;
+    if (publish == null || pick == null) return null;
+    return HostFileTransferManager(
+      publish: publish,
+      pickOutgoing: pick,
+      onEvent: session.onFileEvent,
+      onLog: (m) => session._log('peer[$clientId] $m'),
+      stagingRoot: session.stagingRoot,
+    );
+  }();
+
+  StreamSubscription<String>? _capsSub;
 
   /// 远端 candidate：answer 未 setRemote 前缓冲（认证前信令就可能带来 ICE）
   late final RemoteCandidateSink _remoteCandidates = RemoteCandidateSink(
@@ -570,20 +613,41 @@ class _HostPeer implements HostClientConnection {
       session._log('peer[$clientId] signaling: $s');
     };
 
-    // client 会创建 'event' DataChannel（输入事件）
+    // client 会创建 'event'（输入）和 'filetransfer-N'（文件传输）通道。
+    // 后者的 DCEP OPEN 由桌面端 libwebrtc/Chrome 发出，Android 侧只需接管
+    // 入站通道，无需自己 createDataChannel（此前 Android 在 Stable 之后
+    // 新建 in-band 通道不发 DCEP，正是主控→Windows 方向需要预建通道池的原因）。
     _pc!.onDataChannel = (channel) {
       if (_closing) {
         unawaited(channel.close());
         return;
       }
+      // flutter_webrtc 的 label 声明为 nullable，统一收敛成非空字符串。
+      final label = channel.label ?? '';
       session._log(
-        'peer[$clientId] incoming datachannel: ${channel.label} '
+        'peer[$clientId] incoming datachannel: $label '
         '(sid=${channel.id}, state=${channel.state})',
       );
-      if (channel.label == 'event') {
+      if (label == 'event') {
         _channels.handleDataChannel(channel);
+        return;
+      }
+      if (label.startsWith('filetransfer-')) {
+        final manager = _files;
+        if (manager == null) {
+          session._log(
+            'peer[$clientId] $label ignored: file transfer disabled',
+          );
+          unawaited(channel.close());
+          return;
+        }
+        manager.accept(wrapRtcDataChannel(channel), label: label);
       }
     };
+
+    _capsSub ??= _channels.onCapabilities.listen((caps) {
+      session._log('peer[$clientId] client capabilities: $caps');
+    });
   }
 
   /// 认证完成后：创建连接、加视频轨和 control 通道，再生成签名 offer。
@@ -666,6 +730,9 @@ class _HostPeer implements HostClientConnection {
       _initialControlMessagesSent = true;
       if (session.capabilities.isNotEmpty) {
         _channels.sendCapabilities(session.capabilities);
+        session._log(
+          'peer[$clientId] host capabilities sent: ${session.capabilities}',
+        );
       }
       sendVideoLayout(session.screenWidth, session.screenHeight);
     }
@@ -794,6 +861,9 @@ class _HostPeer implements HostClientConnection {
       } catch (_) {}
     }
     _queue.clear();
+    await _capsSub?.cancel();
+    _capsSub = null;
+    await _files?.dispose();
     await _channels.dispose();
     if (_pc != null) {
       await _pc!.close();

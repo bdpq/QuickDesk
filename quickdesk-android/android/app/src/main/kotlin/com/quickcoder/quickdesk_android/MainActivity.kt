@@ -19,6 +19,7 @@ import rikka.shizuku.Shizuku
  *   quickdesk/host_identity  —— Chromium SPAKE2 Host 证书（见 HostIdentity）
  *   quickdesk/input          —— 被控端输入注入（见 InputRouter）+ 权限引导
  *   quickdesk/webrtc_config  —— 注入 WebRTC field trials（被控端 playout-delay）
+ *   quickdesk/file_store     —— 被控端接收文件发布到系统下载目录
  */
 class MainActivity : FlutterActivity() {
 
@@ -127,6 +128,33 @@ class MainActivity : FlutterActivity() {
                             }
                         }
                     }, "quickdesk-host-identity").start()
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        val fileStoreCh = MethodChannel(messenger, CHANNEL_FILE_STORE)
+        fileStoreCh.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "publishToDownloads" -> {
+                    val sourcePath = call.argument<String>("sourcePath")
+                    val displayName = call.argument<String>("displayName")
+                    if (sourcePath.isNullOrEmpty() || displayName.isNullOrEmpty()) {
+                        result.success(null)
+                    } else {
+                        Thread({
+                            val published = try {
+                                FileStore.publishToDownloads(
+                                    applicationContext,
+                                    sourcePath,
+                                    displayName,
+                                )
+                            } catch (_: Throwable) {
+                                null
+                            }
+                            runOnUiThread { result.success(published) }
+                        }, "quickdesk-file-store").start()
+                    }
                 }
                 else -> result.notImplemented()
             }
@@ -258,6 +286,7 @@ class MainActivity : FlutterActivity() {
         private const val CHANNEL_HOST_IDENTITY = "quickdesk/host_identity"
         private const val CHANNEL_INPUT = "quickdesk/input"
         private const val CHANNEL_WEBRTC_CONFIG = "quickdesk/webrtc_config"
+        private const val CHANNEL_FILE_STORE = "quickdesk/file_store"
 
         /**
          * 强制视频发送端把 playout-delay RTP 扩展写为 {0,0}，对齐 Chromium

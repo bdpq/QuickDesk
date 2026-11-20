@@ -52,20 +52,37 @@ Uint8List _encEnd() => lengthDelimitedField(3, Uint8List(0));
 Uint8List _encSuccess() => lengthDelimitedField(4, Uint8List(0));
 Uint8List _encRequestTransfer() => lengthDelimitedField(5, Uint8List(0));
 
+/// 被控端（Host）复用的编码入口。Host 只在控制端创建的 filetransfer-N
+/// 通道上应答/推送文件，帧格式与主控端完全一致。
+Uint8List encodeFtMetadata(String filename, int size) =>
+    _encMetadata(filename, size);
+Uint8List encodeFtData(Uint8List data) => _encData(data);
+Uint8List encodeFtEnd() => _encEnd();
+Uint8List encodeFtSuccess() => _encSuccess();
+Uint8List encodeFtRequestTransfer() => _encRequestTransfer();
+
+/// ErrorType.CANCELED = 1；Host 侧用它拒绝无法完成的传输（例如用户取消
+/// 选择文件、收到非法帧）。
+Uint8List encodeFtError(int type) =>
+    lengthDelimitedField(6, varintField(1, type));
+
 // ==================== 解码 ====================
 
-class _FtMessage {
+/// 一条 FileTransfer 帧解析结果。Host 与 client 共用；client 不会收到
+/// request_transfer，Host 不会收到 success（上传方向）以外的确认帧。
+class FtMessage {
   bool metadata = false;
   String? metaFilename;
   int? metaSize;
   Uint8List? data;
   bool end = false;
   bool success = false;
+  bool requestTransfer = false;
   int? errorType;
 }
 
-_FtMessage _decode(Uint8List data) {
-  final msg = _FtMessage();
+FtMessage decodeFtMessage(Uint8List data) {
+  final msg = FtMessage();
   final reader = ProtobufReader(data);
   while (reader.hasMore) {
     final tag = reader.readTag();
@@ -89,6 +106,10 @@ _FtMessage _decode(Uint8List data) {
         reader.skipField(tag.wireType);
         msg.success = true;
         break;
+      case 5:
+        reader.skipField(tag.wireType);
+        msg.requestTransfer = true;
+        break;
       case 6:
         final errReader = ProtobufReader(reader.readBytes());
         msg.errorType = 0;
@@ -108,7 +129,7 @@ _FtMessage _decode(Uint8List data) {
   return msg;
 }
 
-void _decodeMetadata(Uint8List data, _FtMessage msg) {
+void _decodeMetadata(Uint8List data, FtMessage msg) {
   final reader = ProtobufReader(data);
   while (reader.hasMore) {
     final tag = reader.readTag();
@@ -540,7 +561,7 @@ class FileTransferManager extends ChangeNotifier {
 
       Future<void> onData(Uint8List bytes) async {
         if (getStopped()) return;
-        final message = _decode(bytes);
+        final message = decodeFtMessage(bytes);
         touch();
         if (message.errorType != null) {
           mark('host error frame');

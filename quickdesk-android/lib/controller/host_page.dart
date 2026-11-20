@@ -12,6 +12,7 @@ import '../host/host_controller.dart';
 import '../host/host_credential_store.dart';
 import '../host/input_injector.dart';
 import '../l10n/app_strings.dart';
+import '../protocol/host_file_transfer.dart';
 import '../protocol/host_session.dart';
 
 class HostPage extends StatefulWidget {
@@ -29,6 +30,7 @@ class _HostPageState extends State<HostPage> {
   Future<void> _configurationWork = Future<void>.value();
   String? _serverScope;
   final List<StreamSubscription<HostStatus>> _subs = [];
+  StreamSubscription<HostFileEvent>? _fileSub;
 
   final InputInjector _injector = InputInjector();
   bool _shizukuRunning = false;
@@ -93,6 +95,8 @@ class _HostPageState extends State<HostPage> {
             await sub.cancel();
           }
           _subs.clear();
+          await _fileSub?.cancel();
+          _fileSub = null;
           await old?.stop();
           old?.dispose();
           if (!mounted || generation != _configuration) {
@@ -119,6 +123,10 @@ class _HostPageState extends State<HostPage> {
               }
             }),
           );
+          _fileSub = controller.onFileEvent.listen((event) {
+            if (!mounted || !identical(_controller, controller)) return;
+            _showFileEvent(event);
+          });
           final creds = await controller.loadCredentials();
           if (!mounted || generation != _configuration) {
             return;
@@ -143,6 +151,24 @@ class _HostPageState extends State<HostPage> {
             });
           }
         });
+  }
+
+  /// 控制端上传/下载的结果提示。接收文件会显示实际保存位置，便于在
+  /// 手机文件管理器里找到（Android 10+ 为「下载/QuickDesk」）。
+  void _showFileEvent(HostFileEvent event) {
+    final message = switch (event.kind) {
+      HostFileEventKind.received =>
+        '已收到 ${event.filename}${event.path == null ? '' : '\n${event.path}'}',
+      HostFileEventKind.sent => '已发送 ${event.filename}',
+      HostFileEventKind.failed =>
+        '文件传输出错：${event.filename} ${event.message ?? ''}',
+    };
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        duration: const Duration(seconds: 6),
+        content: Text(message),
+      ),
+    );
   }
 
   Future<void> _start() async {
@@ -597,6 +623,7 @@ class _HostPageState extends State<HostPage> {
     for (final s in _subs) {
       s.cancel();
     }
+    _fileSub?.cancel();
     _controller?.dispose();
     WakelockPlus.disable();
     super.dispose();

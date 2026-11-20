@@ -7,13 +7,17 @@
 library;
 
 import 'dart:async';
+import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/services.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../api/host_api.dart';
 import '../api/signaling_api.dart' show SignalingApiException;
 import '../l10n/app_strings.dart';
 import '../protocol/auth/spake2.dart' as spake2;
+import '../protocol/host_file_transfer.dart';
 import '../protocol/host_session.dart';
 import 'host_credential_store.dart';
 import 'input_injector.dart';
@@ -49,6 +53,11 @@ class HostStatus {
 
 class HostController {
   static const _identityChannel = MethodChannel('quickdesk/host_identity');
+  static const _fileStoreChannel = MethodChannel('quickdesk/file_store');
+
+  /// 被控端支持的能力。桌面端 Chromium client 只有看到 `fileTransfer` 才会
+  /// 启用文件传输工具栏，并在会话 Stable 后创建 filetransfer-N 通道。
+  static const String hostCapabilities = 'fileTransfer';
 
   final String signalingUrl;
   final String? apiKey;
@@ -76,6 +85,11 @@ class HostController {
   final _statusCtrl = StreamController<HostStatus>.broadcast();
   Stream<HostStatus> get onStatus => _statusCtrl.stream;
 
+  final _fileEventCtrl = StreamController<HostFileEvent>.broadcast();
+
+  /// 文件传输结果（收到文件 / 已发送 / 失败），供被控页提示用户。
+  Stream<HostFileEvent> get onFileEvent => _fileEventCtrl.stream;
+
   HostStage _stage = HostStage.idle;
   int _peerCount = 0;
   bool _updatingAccessCode = false;
@@ -98,6 +112,86 @@ class HostController {
   Future<HostCredentials> loadCredentials() async {
     _creds = await _store.load();
     return _creds!;
+  }
+
+  // ==================== 被控端文件传输 ====================
+
+  /// 控制端上传完成：先把暂存文件落到 app 私有外部目录（保证一定能写），
+  /// 再尝试通过 MediaStore 发布一份到系统「下载/QuickDesk」，让用户能直接
+  /// 在文件管理器里看到。Android 10 以下没有 MediaStore.Downloads，保持
+  /// 私有目录路径即可。
+  Future<String> _publishReceivedFile(String filename, File staged) async {
+    final dir = await _receivedDir();
+    final target = await _uniqueTarget(dir, filename);
+    await staged.copy(target);
+    try {
+      final publicPath = await _fileStoreChannel.invokeMethod<String>(
+        'publishToDownloads',
+        {
+          'sourcePath': target,
+          'displayName': target.split(Platform.pathSeparator).last,
+        },
+      );
+      if (publicPath != null && publicPath.isNotEmpty) return publicPath;
+    } catch (_) {
+      // MediaStore 不可用时不影响已经落盘的私有副本。
+    }
+    return target;
+  }
+
+  Future<Directory> _receivedDir() async {
+    Directory base;
+    try {
+      base = await getExternalStorageDirectory() ??
+          await getApplicationDocumentsDirectory();
+    } catch (_) {
+      base = await getApplicationDocumentsDirectory();
+    }
+    final dir = Directory(
+      '${base.path}${Platform.pathSeparator}QuickDesk'
+      '${Platform.pathSeparator}Received',
+    );
+    await dir.create(recursive: true);
+    return dir;
+  }
+
+  /// 同名文件不覆盖，追加 (1)/(2) 后缀，避免桌面端重复上传丢数据。
+  Future<String> _uniqueTarget(Directory dir, String filename) async {
+    var candidate = '${dir.path}${Platform.pathSeparator}$filename';
+    var index = 1;
+    while (await File(candidate).exists()) {
+      final dot = filename.lastIndexOf('.');
+      final name = dot > 0 ? filename.substring(0, dot) : filename;
+      final ext = dot > 0 ? filename.substring(dot) : '';
+      candidate = '${dir.path}${Platform.pathSeparator}$name ($index)$ext';
+      index++;
+    }
+    return candidate;
+  }
+
+  /// 控制端请求下载：在本机弹文件选择器（被控画面上可直接操作）。
+  Future<String?> _pickOutgoingFile() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.any,
+      allowMultiple: false,
+      withData: false,
+    );
+    final files = result?.files;
+    if (files == null || files.isEmpty) return null;
+    return files.single.path;
+  }
+
+  void _emitFileEvent(HostFileEvent event) {
+    if (!_disposed && !_fileEventCtrl.isClosed) _fileEventCtrl.add(event);
+  }
+
+  /// 传输暂存目录用应用 cache（比 Directory.systemTemp 在 Android 上更可靠）。
+  Future<Directory?> _stagingRoot() async {
+    try {
+      return await getTemporaryDirectory();
+    } catch (_) {
+      return null;
+    }
   }
 
   /// 启动被控：完整流程。调用前应确保无障碍已开启（否则会停在 needAccessibility）。
@@ -202,7 +296,7 @@ class HostController {
         deviceId + accessCode,
       );
 
-      // 6. 建立 HostSession
+      // 6. 建立 HostSession（含 fileTransfer 能力与文件落盘/选文件回调）
       final session = HostSession(
         signalingUrl: signalingUrl,
         deviceId: deviceId,
@@ -212,7 +306,11 @@ class HostController {
         screenWidth: capture.width,
         screenHeight: capture.height,
         iceServers: iceServers,
-        capabilities: '',
+        capabilities: hostCapabilities,
+        publishReceivedFile: _publishReceivedFile,
+        pickOutgoingFile: _pickOutgoingFile,
+        onFileEvent: _emitFileEvent,
+        stagingRoot: await _stagingRoot(),
         onInput: (event) => _injector.inject(event),
       );
       _session = session;
@@ -384,7 +482,10 @@ class HostController {
 
   void dispose() {
     _disposed = true;
-    unawaited(stop().whenComplete(_statusCtrl.close));
+    unawaited(stop().whenComplete(() {
+      _statusCtrl.close();
+      _fileEventCtrl.close();
+    }));
   }
 }
 
