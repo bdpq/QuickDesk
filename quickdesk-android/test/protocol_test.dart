@@ -565,5 +565,22 @@ void main() {
           JingleParser().parse(builder.buildIqResult('iq-42', 'b@x/2'));
       expect(iqResult!.action, isNot('session-terminate'));
     });
+
+    test('IQ result must carry the full host JID (regression: error 8)', () {
+      // Chromium IqSender 用 IQ result 的 from 匹配原请求的 to。Host 若在
+      // 回第一条 result 之后才初始化 localJid，from 会是空串，应答被丢弃，
+      // session-initiate 超时 -> jingle error 8 -> 连上约 45 秒即断开。
+      const hostJid =
+          '797204163@quickdesk.local/chromoting_ftl_quickdesk_host';
+      final builder = JingleBuilder()..remoteJid = 'b@x/2';
+      expect(builder.buildIqResult('iq-1', 'b@x/2'), contains('from=""'));
+
+      builder.localJid = hostJid;
+      final xml = builder.buildIqResult('iq-1', 'b@x/2');
+      expect(xml, contains('from="$hostJid"'));
+      expect(xml, contains('to="b@x/2"'));
+      expect(xml, contains('type="result"'));
+      expect(xml, contains('id="iq-1"'));
+    });
   });
 }

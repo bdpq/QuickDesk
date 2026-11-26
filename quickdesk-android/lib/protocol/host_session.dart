@@ -347,7 +347,14 @@ class _HostPeer implements HostClientConnection {
   bool _mediaNegotiationStarted = false;
   bool _authenticated = false;
 
-  _HostPeer({required this.session, required this.clientId});
+  _HostPeer({required this.session, required this.clientId}) {
+    // Host JID 是固定的，必须在收到任何 IQ 之前就绪。若等到
+    // _handleSessionInitiate 才赋值，首条 IQ result 的 from 会是空串：
+    // Chromium IqSender 以 "invalid JID" 丢弃应答，session-initiate 随后
+    // 超时（error 8）并把已建立的 WebRTC 会话拆掉——表现为连上约 45 秒
+    // 就自动断开。
+    _jingle.localJid = session._hostJid;
+  }
 
   @override
   DateTime? connectedAt;
@@ -373,10 +380,7 @@ class _HostPeer implements HostClientConnection {
       if (message.iqType == 'set' &&
           message.iqId.isNotEmpty &&
           message.from.isNotEmpty) {
-        session._sendToClient(
-          clientId,
-          _jingle.buildIqResult(message.iqId, message.from),
-        );
+        _sendIqResult(message);
       }
       return;
     }
@@ -387,10 +391,7 @@ class _HostPeer implements HostClientConnection {
     if (message.iqType == 'set' &&
         message.iqId.isNotEmpty &&
         message.from.isNotEmpty) {
-      session._sendToClient(
-        clientId,
-        _jingle.buildIqResult(message.iqId, message.from),
-      );
+      _sendIqResult(message);
     }
 
     switch (message.action) {
@@ -418,6 +419,24 @@ class _HostPeer implements HostClientConnection {
     }
   }
 
+  /// 对 IQ set 回 result。`from` 必须是本端完整 JID：Chromium 的 IqSender
+  /// 用它匹配原请求的 `to`，空值会让应答被静默丢弃，进而触发
+  /// "session-initiate request timed out" (error 8)。
+  void _sendIqResult(JingleMessage message) {
+    if (_jingle.localJid.isEmpty) {
+      _jingle.localJid = session._hostJid;
+    }
+    session._sendToClient(
+      clientId,
+      _jingle.buildIqResult(message.iqId, message.from),
+    );
+    if (message.action == 'session-initiate') {
+      session._log(
+        'peer[$clientId] iq result for initiate: from=${_jingle.localJid}',
+      );
+    }
+  }
+
   Future<void> _handleSessionInitiate(JingleMessage message) async {
     session._log('peer[$clientId] session-initiate (sid=${message.sid})');
 
@@ -437,7 +456,7 @@ class _HostPeer implements HostClientConnection {
     }
 
     _jingle.sessionId = message.sid;
-    _jingle.localJid = session._hostJid;
+    // localJid 已在构造时设为固定 host JID（IQ result 的 from 依赖它）。
     _jingle.remoteJid = peerJid;
 
     // SPAKE2 Bob：local=hostJid, remote=clientJid
