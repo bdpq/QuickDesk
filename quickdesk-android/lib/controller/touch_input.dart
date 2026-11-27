@@ -24,6 +24,7 @@ import 'package:flutter/gestures.dart';
 import '../core/geometry.dart';
 import '../protocol/datachannel_handler.dart';
 import '../protocol/proto/protobuf_messages.dart';
+import '../util/diag_log.dart';
 
 const _longPressTimeout = Duration(milliseconds: 500);
 const _doubleTapGap = Duration(milliseconds: 300);
@@ -68,6 +69,11 @@ class TouchInputController {
   Offset _lastSinglePos = Offset.zero;
   DateTime? _lastTapTime;
   Offset? _lastTapPos;
+  /// 第一击的 display-local 光标坐标。双击第二击发送前复位到这里，
+  /// 保证两击落到同一远端点：Windows 双击容差约 4px，手指落点差异或
+  /// 直接触摸模式下的按下瞬移会让第二击漂移，被判成两次单击。
+  double? _firstTapCursorX;
+  double? _firstTapCursorY;
   Timer? _longPressTimer;
   bool _secondTap = false;
   bool _dragging = false;
@@ -85,6 +91,11 @@ class TouchInputController {
   /// 本次单指手势是否是「放大浏览」：拖动画布、轻点才定位远端光标。
   /// 显式拖拽（工具栏按钮）或已按住左键时不进入该状态。
   bool _panGesture = false;
+
+  // ---- 双击流畅度诊断（低开销：move 仅内存计数，click 才落盘） ----
+  int _traceClickSeq = 0;
+  int _traceMovesSinceClick = 0;
+  int? _traceLastClickMs;
 
   TouchInputController(this.dcHandler);
 
@@ -203,12 +214,19 @@ class TouchInputController {
       _moved = false;
       _twoFingerMode = 'pending';
       _secondTap = _isSecondTap(event.position);
+      DiagLog.log(
+        'TOUCH',
+        'down#${_traceClickSeq + 1} secondTap=$_secondTap '
+        'pos=(${event.position.dx.round()},${event.position.dy.round()})',
+      );
       // 放大 + 直接触摸：单指拖动改为平移画面，轻点时才定位远端光标。
       // 平移优先于「双击后拖动」，避免连续拖动浏览时误按住远程左键。
       _panGesture = panWhenZoomed && !leftButtonHeld && !dragArmed;
       if (!_secondTap) {
         _lastTapTime = null;
         _lastTapPos = null;
+        _firstTapCursorX = null;
+        _firstTapCursorY = null;
         if (!leftButtonHeld && !dragArmed) _startLongPress();
       }
       // 直接触摸：按下即定位，轻点/双击/长按/拖拽都从手指位置开始。
@@ -232,6 +250,8 @@ class TouchInputController {
       _secondTap = false;
       _lastTapTime = null;
       _lastTapPos = null;
+      _firstTapCursorX = null;
+      _firstTapCursorY = null;
       _moved = true;
       _twoFingerMode = 'pending';
     }
@@ -371,13 +391,27 @@ class TouchInputController {
         if (_panGesture) _placeCursorAtScreen(_touchStartPos);
         // Emit every tap immediately so both clients produce the same
         // standard two-click sequence for a double-click.
+        if (_secondTap &&
+            _firstTapCursorX != null &&
+            _firstTapCursorY != null) {
+          // 双击第二击：复位到第一击的光标坐标，保证两击发往同一远端点。
+          // Windows 双击要求两击落在约 4px 内；手指落点差异或按下瞬移会
+          // 让坐标漂移（实测中位 6.4px、最大 23px），被当成两次单击。
+          cursorX = _firstTapCursorX!;
+          cursorY = _firstTapCursorY!;
+          onCursorMoved?.call();
+        }
         _sendClick(MouseButton.left);
         if (_secondTap) {
           _lastTapTime = null;
           _lastTapPos = null;
+          _firstTapCursorX = null;
+          _firstTapCursorY = null;
         } else {
           _lastTapTime = DateTime.now();
           _lastTapPos = _touchStartPos;
+          _firstTapCursorX = cursorX;
+          _firstTapCursorY = cursorY;
         }
         _secondTap = false;
       }
@@ -413,6 +447,8 @@ class TouchInputController {
     _secondTap = false;
     _lastTapTime = null;
     _lastTapPos = null;
+    _firstTapCursorX = null;
+    _firstTapCursorY = null;
     _moved = false;
     _twoFingerMode = 'pending';
     _pinchStartDist = 0;
@@ -465,6 +501,7 @@ class TouchInputController {
         y: cursorY.round() + remoteOriginY,
       ),
     );
+    _traceMovesSinceClick++;
     onCursorMoved?.call();
   }
 
@@ -499,6 +536,19 @@ class TouchInputController {
     if (remoteWidth <= 0 || remoteHeight <= 0) return;
     final x = cursorX.round() + remoteOriginX;
     final y = cursorY.round() + remoteOriginY;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final gap = _traceLastClickMs == null ? -1 : now - _traceLastClickMs!;
+    final moves = _traceMovesSinceClick;
+    _traceClickSeq++;
+    _traceLastClickMs = now;
+    _traceMovesSinceClick = 0;
+    // 每条 click 都落盘（低频）；两次 click 的间隔与期间 move 数可直接
+    // 区分「手势层判定慢」与「传输链路队头阻塞」。
+    DiagLog.log(
+      'TOUCH',
+      'click#${_traceClickSeq} ${button.name} x=$x y=$y '
+      'gap=${gap}ms movesBetween=$moves evReady=${dcHandler.eventReady}',
+    );
     dcHandler.sendMouseEvent(
       MouseEventMsg(x: x, y: y, button: button.value, buttonDown: true),
     );

@@ -1,7 +1,7 @@
 name: quickdesk_android
 description: QuickDesk Android client - AI-native remote desktop (controller + host roles)
 publish_to: none
-version: 0.1.0+2016
+version: 0.1.0+2018
 
 environment:
   sdk: ">=3.4.0 <4.0.0"

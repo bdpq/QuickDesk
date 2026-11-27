@@ -180,6 +180,52 @@ void main() {
     expect(controller.leftButtonHeld, isFalse);
   });
 
+  test('double tap locks both clicks to the first tap remote coordinate', () {
+    controller.setDirectTouchMode(true);
+    // 第一击屏幕 (100,400) → 远程 (250,400)
+    _tap(controller, const Offset(100, 400));
+    // 第二击手指落点偏移（模拟真实手指抖动，仍在 48px 双击距离内）
+    _tap(controller, const Offset(115, 405));
+
+    final clickDowns =
+        channel.mouseEvents.where((e) => e.buttonDown == true).toList();
+    expect(clickDowns, hasLength(2));
+    expect(clickDowns[0].x, 250);
+    expect(clickDowns[0].y, 400);
+    // 两击必须落在完全相同的远端点，否则 Windows 判成两次单击
+    expect(clickDowns[1].x, clickDowns[0].x);
+    expect(clickDowns[1].y, clickDowns[0].y);
+  });
+
+  test('double tap coordinate lock keeps display origin', () {
+    controller.setRemoteDisplay(1000, 800, originX: 1920, originY: 100);
+    controller.setDirectTouchMode(true);
+    _tap(controller, const Offset(100, 400));
+    _tap(controller, const Offset(112, 402));
+
+    final clickDowns =
+        channel.mouseEvents.where((e) => e.buttonDown == true).toList();
+    expect(clickDowns, hasLength(2));
+    expect(clickDowns[0].x, 2170);
+    expect(clickDowns[0].y, 500);
+    expect(clickDowns[1].x, 2170);
+    expect(clickDowns[1].y, 500);
+  });
+
+  test('taps beyond double-tap gap are not coordinate-locked', () async {
+    controller.setDirectTouchMode(true);
+    _tap(controller, const Offset(100, 400));
+    await Future<void>.delayed(const Duration(milliseconds: 350));
+    channel.mouseEvents.clear();
+    _tap(controller, const Offset(300, 400));
+
+    final clickDowns =
+        channel.mouseEvents.where((e) => e.buttonDown == true).toList();
+    expect(clickDowns, hasLength(1));
+    // 独立单击跟随自身落点，不被复位到上一次坐标
+    expect(clickDowns[0].x, greaterThan(250));
+  });
+
   test('second tap movement holds left button until pointer up', () {
     _tap(controller, const Offset(100, 100));
 
