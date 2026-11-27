@@ -134,7 +134,10 @@ test(`real remote page: ${viewport.width}px toolbar, help, keyboard and accessib
     try {
         await page.goto(`${base}/remote.html`);
         await page.waitForFunction(() => window.remoteDesktopApp);
-        await page.evaluate(() => {
+        await page.evaluate(async () => {
+            const { FloatingToolbar } = await import('/js/ui/floating-toolbar.js');
+            window.remoteDesktopApp.floatingToolbar = new FloatingToolbar(document.querySelector('#remoteContainer'));
+            window.remoteDesktopApp.floatingToolbar.setVisible(false);
             // No credentials/session/network are needed: attach a recording host
             // at the real input boundary after normal init reports missing params.
             const app = window.remoteDesktopApp;
@@ -149,14 +152,25 @@ test(`real remote page: ${viewport.width}px toolbar, help, keyboard and accessib
             app._setupInputHandlers();
         });
         const row = page.locator('#mobileToolbar > .mobile-toolbar-row');
-        if (viewport.width === 320) assert.equal(await row.evaluate(el => el.scrollWidth > el.clientWidth), true);
-        for (const id of ['btnKeyboard', 'btnLeftClick', 'btnDrag', 'btnRightClick', 'btnZoomReset', 'btnGestureHelp', 'btnLogs', 'btnFullscreen', 'btnDisconnect']) {
+        if (viewport.width === 320) assert.equal(await row.evaluate(el => el.scrollWidth <= el.clientWidth), true);
+        for (const id of ['btnKeyboard', 'btnLeftClick', 'btnDrag', 'btnRightClick', 'btnZoomReset', 'btnMobileMore']) {
             const button = page.locator(`#${id}`);
             await button.scrollIntoViewIfNeeded();
             const bounds = await button.boundingBox();
             assert.ok(bounds.width >= 48 && bounds.height >= 48, `${id} minimum target`);
             assert.ok(bounds.x >= -1 && bounds.x + bounds.width <= viewport.width + 1, `${id} reachable by horizontal scroll`);
         }
+        await page.locator('#btnMobileMore').tap();
+        for (const id of ['btnLogs', 'btnFullscreen', 'btnDisconnect']) {
+            assert.equal(await page.locator(`#${id}`).isVisible(), true);
+        }
+        assert.equal(await page.locator('.floating-btn').isVisible(), false);
+        await page.locator('#btnMobileSettings').tap();
+        assert.equal(await page.locator('.floating-menu').isVisible(), true);
+        await page.evaluate(() => remoteDesktopApp.floatingToolbar.setVisible(false));
+        await page.locator('#btnMobileMore').tap();
+        assert.equal(await page.locator('#mobileMoreMenu').isVisible(), false);
+        await page.locator('#btnMobileMore').tap();
         const help = page.locator('#btnGestureHelp');
         await help.tap();
         assert.equal(await help.getAttribute('aria-expanded'), 'true');
@@ -164,6 +178,7 @@ test(`real remote page: ${viewport.width}px toolbar, help, keyboard and accessib
         await help.tap();
         assert.equal(await help.getAttribute('aria-expanded'), 'false');
         assert.equal(await page.locator('#mobileGestureHelp').isVisible(), false);
+        await page.locator('#btnMobileMore').tap();
 
         const drag = page.locator('#btnDrag');
         await drag.tap();
@@ -193,7 +208,11 @@ test(`real remote page: ${viewport.width}px toolbar, help, keyboard and accessib
         });
         await page.waitForFunction(() => inputEvents.some(e => e.kind === 'text'));
         assert.deepEqual(await page.evaluate(() => inputEvents.filter(e => e.kind === 'text').map(e => e.text)), ['你好']);
-        await keyboard.tap();
+        assert.equal(await row.isVisible(), false);
+        if (process.env.QD_SCREENSHOT_DIR) await page.screenshot({ path: `${process.env.QD_SCREENSHOT_DIR}/keyboard-${viewport.width}.png` });
+        assert.ok((await page.locator('#mobileKeyRow').boundingBox()).height <= 50, 'input accessory stays one row');
+        await page.locator('#btnHideKeyboard').tap();
+        assert.equal(await row.isVisible(), true);
         assert.equal(await keyboard.getAttribute('aria-pressed'), 'false');
         assert.equal(await page.locator('#mobileKeyRow').isVisible(), false);
         // Rotating and visual viewport resize must not blur the IME bridge.
@@ -202,7 +221,10 @@ test(`real remote page: ${viewport.width}px toolbar, help, keyboard and accessib
         assert.equal(await page.locator('#mobileKeyInput').evaluate(el => document.activeElement === el), true);
         await page.evaluate(() => window.visualViewport?.dispatchEvent(new Event('resize')));
         assert.equal(await keyboard.getAttribute('aria-pressed'), 'true');
-        await keyboard.tap();
+        assert.equal(await row.isVisible(), false);
+        assert.ok((await page.locator('#mobileKeyRow').boundingBox()).height <= 50, 'input accessory stays one row');
+        await page.locator('#btnHideKeyboard').tap();
+        assert.equal(await row.isVisible(), true);
         assert.equal(await keyboard.getAttribute('aria-pressed'), 'false');
         await page.evaluate(() => remoteDesktopApp._cleanupInputHandlers());
         assert.deepEqual(errors, []);

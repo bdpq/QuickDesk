@@ -31,6 +31,7 @@ import '../remote_text_input.dart';
 import '../video_stats.dart';
 import 'cursor_painter.dart';
 import 'remote_toolbar.dart';
+import 'remote_keyboard.dart';
 import 'quality_sheet.dart';
 import 'stats_panel.dart';
 import 'transfer_sheet.dart';
@@ -70,6 +71,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   late final RemoteTextInputRelay _textRelay;
   final _textFocus = FocusNode();
   bool _keyboardVisible = false;
+  bool _imeWasVisible = false;
   final List<StreamSubscription> _subs = [];
 
   // 多显示器
@@ -321,8 +323,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       context: context,
       isScrollControlled: true,
       builder: (context) => QualitySheet(
-        canRequest:
-            _session.dcHandler.controlReady &&
+        canRequest: _session.dcHandler.controlReady &&
             canRequestDesktopQuality(_hostCaps),
         muted: _audioMuted,
         onMute: (value) {
@@ -333,14 +334,14 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
         onBitrate: _session.dcHandler.sendPreferredMinBitrate,
         onResolution: (width, height) =>
             _session.dcHandler.sendClientResolution(
-              ClientResolutionMsg(
-                width,
-                height,
-                screenId: _displays.isEmpty
-                    ? null
-                    : _displays[_activeDisplayIndex].screenId,
-              ),
-            ),
+          ClientResolutionMsg(
+            width,
+            height,
+            screenId: _displays.isEmpty
+                ? null
+                : _displays[_activeDisplayIndex].screenId,
+          ),
+        ),
       ),
     );
   }
@@ -379,17 +380,20 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     _session.dcHandler.resendClientCapabilities();
     try {
       final result = await FilePicker.platform.pickFiles(
-        withData: false, allowMultiple: true,
+        withData: false,
+        allowMultiple: true,
       );
-      if (!mounted || manager != _fileTransfer ||
-          _state != SessionState.connected || result == null) {
+      if (!mounted ||
+          manager != _fileTransfer ||
+          _state != SessionState.connected ||
+          result == null) {
         return;
       }
       for (final picked in result.files) {
         if (picked.path == null) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(L10n.t('file.unavailable'))),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text(L10n.t('file.unavailable'))));
           continue;
         }
         manager.enqueueUpload(picked.name, picked.path!);
@@ -410,7 +414,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     _session.dcHandler.resendClientCapabilities(); // 同上，幂等兜底
     try {
       final dir = await _downloadDir();
-      if (!mounted || manager != _fileTransfer ||
+      if (!mounted ||
+          manager != _fileTransfer ||
           _state != SessionState.connected) {
         return;
       }
@@ -562,9 +567,12 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
 
   void _toggleKeyboard() {
     _cancelAllInput();
+    _touch.setKeyboardMode(!_keyboardVisible);
     setState(() => _keyboardVisible = !_keyboardVisible);
     if (_keyboardVisible) {
-      _textFocus.requestFocus();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _keyboardVisible) _textFocus.requestFocus();
+      });
     } else {
       _textFocus.unfocus();
     }
@@ -588,8 +596,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     if (composing.isValid && !composing.isCollapsed) {
       return KeyEventResult.ignored;
     }
-    final shortcut =
-        HardwareKeyboard.instance.isControlPressed ||
+    final shortcut = HardwareKeyboard.instance.isControlPressed ||
         HardwareKeyboard.instance.isAltPressed ||
         HardwareKeyboard.instance.isMetaPressed;
     if (!shortcut &&
@@ -644,6 +651,20 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   @override
   void didChangeMetrics() {
     _cancelAllInput();
+    final views = WidgetsBinding.instance.platformDispatcher.views;
+    if (views.isEmpty) return;
+    final visible = views.first.viewInsets.bottom > 0;
+    final dismissed = _imeWasVisible && !visible;
+    _imeWasVisible = visible;
+    if (dismissed && _keyboardVisible) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _keyboardVisible && !_imeWasVisible) {
+          _textFocus.unfocus();
+          _touch.setKeyboardMode(false);
+          setState(() => _keyboardVisible = false);
+        }
+      });
+    }
   }
 
   void _showGestureHelp() {
@@ -679,6 +700,10 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       canPop: false,
       onPopInvokedWithResult: (didPop, _) async {
         if (didPop) return;
+        if (_keyboardVisible) {
+          _toggleKeyboard();
+          return;
+        }
         _cancelAllInput();
         await _session.disconnect();
         if (context.mounted) Navigator.of(context).pop();
@@ -815,7 +840,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                   ],
                 ),
               ),
-              if (connected)
+              if (connected && !_keyboardVisible)
                 Padding(
                   padding: const EdgeInsets.all(8),
                   child: RemoteToolbar(
@@ -866,67 +891,14 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     );
   }
 
-  Widget _buildKeyboard() {
-    return Container(
-      color: Theme.of(context).colorScheme.surface,
-      padding: const EdgeInsets.all(8),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: [
-                for (final entry in const <int, String>{
-                  0x29: 'Esc',
-                  0x2b: 'Tab',
-                  0x28: 'Enter',
-                  0x2a: '⌫',
-                  0x50: '←',
-                  0x52: '↑',
-                  0x4f: '→',
-                  0x51: '↓',
-                }.entries)
-                  TextButton(
-                    style: TextButton.styleFrom(
-                      minimumSize: const Size(48, 48),
-                    ),
-                    onPressed: () => _sendControlKey(entry.key),
-                    child: Text(entry.value),
-                  ),
-              ],
-            ),
-          ),
-          Focus(
-            onKeyEvent: _onKey,
-            onFocusChange: (focused) {
-              if (!focused) _cancelAllInput();
-            },
-            child: TextField(
-              controller: _textInputCtrl,
-              focusNode: _textFocus,
-              autofocus: true,
-              autocorrect: false,
-              enableSuggestions: false,
-              textInputAction: TextInputAction.done,
-              onSubmitted: (_) => _sendControlKey(0x28),
-              decoration: InputDecoration(
-                hintText: L10n.t('remote.textInputHint'),
-                labelText: L10n.t('remote.keyboard'),
-                suffixIcon: IconButton(
-                  tooltip: L10n.t('remote.hideKeyboard'),
-                  onPressed: _toggleKeyboard,
-                  icon: const Icon(Icons.keyboard_hide),
-                ),
-                border: const OutlineInputBorder(),
-                isDense: true,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+  Widget _buildKeyboard() => RemoteKeyboard(
+        controller: _textInputCtrl,
+        focusNode: _textFocus,
+        onKey: _onKey,
+        onFocusLost: _cancelAllInput,
+        onDismiss: _toggleKeyboard,
+        onControlKey: _sendControlKey,
+      );
 
   /// 自定义视频层：按视频宽高比 letterbox，Texture 强制铺满计算出的区域。
   Widget _buildRemoteVideo() {
@@ -942,9 +914,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
 
           final vw = _renderer.videoWidth.toDouble();
           final vh = _renderer.videoHeight.toDouble();
-          final aspect = (vw > 0 && vh > 0)
-              ? vw / vh
-              : _renderer.value.aspectRatio;
+          final aspect =
+              (vw > 0 && vh > 0) ? vw / vh : _renderer.value.aspectRatio;
 
           return LayoutBuilder(
             builder: (context, constraints) {

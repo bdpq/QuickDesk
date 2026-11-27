@@ -21,7 +21,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.quickcoder.quickdesk_android"
+        applicationId = "com.quickcoder.quickdesk_android.dev"
         // 被控输入（无障碍手势 / Shizuku 注入）要求 API 24+
         minSdk = maxOf(24, flutter.minSdkVersion)
         targetSdk = flutter.targetSdkVersion
