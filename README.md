@@ -505,6 +505,3 @@ For complete third-party license information, see [THIRD_PARTY_LICENSES](THIRD_P
 - [spdlog](https://github.com/gabime/spdlog) — High-performance logging library
 - [coturn](https://github.com/coturn/coturn) — TURN relay server
 
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=barry-ran/QuickDesk&type=Date)](https://star-history.com/#barry-ran/QuickDesk&Date)
